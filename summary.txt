@@ -166,3 +166,59 @@ All 46 backend tests pass; both projects typecheck/build; full stack re-verified
 Env (new): ADMIN_DEV_LOGIN (default true), ADMIN_PUBLIC_KEYS (newline-separated). ABANDON_TIMEOUT_MS
 is now just the initial value; the live value is admin-editable. No migration needed in dev (DB
 wiped on rebuild).
+
+
+Hex — Iteration 5 summary (desktop UI overhaul)
+===============================================
+A responsive, distinctive desktop UI plus the backend changes it needed. All 51 backend tests
+pass; both projects typecheck and build; the full compose stack was rebuilt and re-verified
+live (lobby, an engine game, the resign modal, toasts, the narrow-width reflow, and the admin
+preset import round-trip were all screenshotted/checked end-to-end).
+
+Why: the previous UI was functional but bland and vertically stacked, used native alert/confirm,
+drew the player borders as lines, and hardcoded the random queue presets. This iteration makes
+the client feel like a product and moves the last hardcoded matchmaking knob under admin control.
+
+Backend
+-------
+1) Clock increment never overshoots the base time. GameClock now carries a CapMs ceiling
+   (= the base time) and Switch() clamps remaining+increment to it, so a 5+5 game can never read
+   above 5:00. CapMs is optional on the snapshot (older/un-capped clocks read as uncapped). Tests
+   updated + a dedicated cap test added.
+2) Move history travels with every snapshot. GameView gained Moves: MoveSummary[] (ordered
+   {Color, Kind, Row, Col}). GameInstance keeps an in-memory MoveLog (appended on place/swap) and
+   is re-seeded from the persisted move rows on rehydration (GameManager.Initialize), so the live
+   history survives rejoin/restart with no extra round-trips. This is what the new side-panel
+   move list renders.
+3) Random queue presets are admin-configurable + persisted. New PresetService (Admin/) owns the
+   list, persisted as JSON in the Settings key/value store, falling back to the built-in defaults
+   (Config.RandomPresets) when nothing is stored. The matchmaker (JoinQueue) and GET /Api/Limits
+   now read the live list; the old Config.PresetById was removed. Admin: GET /Admin/Api/State
+   includes Presets; POST /Admin/Api/Presets imports a validated list (the export side is just
+   reading the JSON). The admin page got a "Queue presets" card with a JSON editor + Import/Save.
+   Validation rejects bad ids/labels/duplicates and runs each preset's Settings through the
+   existing ValidateSettings. Tests added (Presets.test.ts).
+
+Frontend
+--------
+4) Baked pastel dark theme (no light-mode toggle). PLAYER colours live in their own CSS vars
+   (--PlayerRed/--PlayerBlue, separate from the UI palette) so they can be made customisable
+   later without touching the theme. Thicker (2px) borders used for contrast throughout.
+5) Action feedback. New FeedbackProvider (Components/Feedback.tsx) gives a toast system
+   (Success/Error/Info) and a custom Confirm modal — replacing the error Banner and all native
+   alert/confirm. Server errors, reconnects, invite-link copy, queue join, swap and resign all
+   surface as toasts; resign now asks via the modal. Banner.tsx removed.
+6) Board redesign (HexBoard + BoardGeometry). The four border lines are gone; instead the outer
+   hexagons carry a coloured rim (top/bottom rows = Red, side columns = Blue). The last move is
+   marked with a soft accent dot instead of the old white outline. Right-click planning, like
+   chess sites: same-cell right-click toggles a highlight, a right-drag draws an arrow; any left
+   interaction or a new move clears the overlay.
+7) Lobby + match layout. Board size is a row of radio chips (hidden entirely when the range has a
+   single option, e.g. a fixed-size engine) instead of a slider; opponent/colour/clock are
+   segmented pill toggles and the swap rule is a switch — everything horizontal, no vertical
+   checklists. The match view now puts players, the resign control and the move history in one
+   left-hand panel beside the board, which reflows below the board on narrow viewports.
+
+No new env vars or migrations (presets persist in the existing Settings table; CapMs rides in the
+existing clock jsonb). To advance the pins: commit inside Backend/ and Frontend/, then
+`git add Backend Frontend` + commit in the root.
