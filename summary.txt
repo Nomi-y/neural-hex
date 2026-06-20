@@ -392,3 +392,51 @@ Frontend
   (when signed in). Opponent names in history are clickable and open that player's profile.
 - Auth plumbing: Game/Auth.ts (Register/Login fetch helpers), Config.ClearSession, and
   Connection.Reconnect (rebinds the WS to the new identity after login/logout).
+
+
+Hex — Iteration 8 summary (frontend redesign, frontend only)
+============================================================
+A ground-up visual redesign of the client per frontend.md. No backend changes; the frontend
+typechecks and builds, and every view was verified live (headless Chrome screenshots) against the
+running compose backend: lobby, engine setup, a live engine game with moves + history, the mobile
+reflow, profile (guest + auth box), searching, and inviting — no console errors. Why: the previous
+UI worked but read as a generic stacked dark theme; the brief asked for a lichess/chess.com feel
+with responsive, intentional motion and a real identity, while keeping the board.
+
+Identity / design system
+- One concept: a calm "study" (deep ink + a honey/amber accent derived from hexagon→honeycomb)
+  framing the loud Red/Blue board — the only saturated colour lives on the board, mirroring the
+  game (the chrome stays quiet). Single warm accent family (Primary interactive + Accent for board
+  highlights), kept clear of the player colours.
+- Type: Space Grotesk (display/wordmark), IBM Plex Sans (body), IBM Plex Mono (clocks, board
+  coordinates, invite codes, ids). Self-hosted via @fontsource (3 packages) so the bundle stays
+  offline-capable on a LAN/localhost — no runtime Google dependency.
+- Signature mark (Components/HexLogo.tsx): the wordmark hexagon encodes the win condition — Red
+  joins top↔bottom so its two horizontal edges are Red; Blue joins the sides so its four diagonals
+  are Blue. Reused as the header brand, the lobby hero, and the favicon (public/favicon.svg). A
+  matching thin Red hairline sits along the very top of the app frame.
+
+Layout / chrome
+- New sticky full-width top bar: brand (logo + "HEX" wordmark) · Play nav with a sliding active
+  underline · connection status · account pill (avatar + name) that opens the profile. Replaced the
+  old centred 960px header/main; content is a centred max-width column (wide for the game, narrow
+  for lobby/profile). Each view fades up once on mount.
+- Game screen mirrors lichess: a narrow sticky match panel (players, clocks, turn, swap, move
+  history, resign) on the left and the board taking the wide column on the right; on narrow
+  viewports the board moves above the panel. The board itself is unchanged (kept as the brief asked
+  — only its colours track the theme variables).
+
+Motion / polish
+- One expo-style ease-out curve (cubic-bezier(0.16,1,0.3,1)) used for every transition: hover lifts
+  + accent colour shifts on buttons/cards, the segmented slider, toggle, chevrons, toasts/modals.
+  Restrained, and fully disabled under prefers-reduced-motion. No unstyled native controls remain.
+- Primary action is the one honey-filled control; danger stays hollow so it never competes. Preset
+  cards, segmented controls, steppers, toggle, engine picker, toasts, modals and the profile/stats
+  surfaces were all restyled to the new system.
+
+Compatibility
+- All themeable CSS variable NAMES are unchanged, so the admin "UI colours" panel and Theme.ts
+  runtime overrides keep working untouched; player-colour variables kept their values so the board
+  reads the same. The icon was moved from the repo root to Frontend/public/ (favicon + asset).
+- Process note: this was done on a feature branch (feature/frontend-redesign) and merged back, per
+  the new branch-per-feature workflow requested in frontend.md.
