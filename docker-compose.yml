@@ -39,6 +39,13 @@ services:
     build: ./Frontend
     ports:
       - "8080:80"
+    environment:
+      # Public address used in generated invite links; empty = whatever origin the visitor
+      # opened (IP / localhost). Set to e.g. https://hex.icelabs.dev when deployed.
+      - HEX_SERVER_URL=${HEX_SERVER_URL:-}
+      # Backend base for API/WS/admin calls; empty = same origin via the nginx proxy. Set to
+      # e.g. https://hex.icelabs.dev if the backend is exposed on its own host.
+      - HEX_BACKEND_URL=${HEX_BACKEND_URL:-}
     depends_on:
       - backend
     restart: unless-stopped

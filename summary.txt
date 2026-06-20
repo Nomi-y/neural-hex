@@ -291,3 +291,64 @@ Motion + colour:
   ACCENT for board/attention highlights (last move, winning path, arrows, info). Both are kept
   clear of the red/blue player colours so nothing on the board is ambiguous. Player colours
   remain in their own vars.
+
+
+Hex — Iteration 6 summary (todos6.md)
+=====================================
+Final mixed UI + backend pass before the dev split (user takes the backend, Claude the UI). Both
+projects typecheck/build; backend tests pass (54, +3 new); the full compose stack was rebuilt and
+the new endpoints/flows verified live (theme set→sanitize→public read, engine auto-seed, admin
+page content). Why: deployment readiness (configurable host), invite-flow fixes, board polish, a
+colour-prototyping tool, and reorganising the engine layer for easier engine development.
+
+Deployment / host configuration (Frontend Config.ts, public/config.js, docker/40-hex-config.sh,
+Dockerfile, root docker-compose.yml)
+- The client no longer bakes its target URLs. Resolution order: runtime window.HexConfig (written
+  from env at container start) → build-time VITE_BACKEND_* (dev) → page origin. Two env vars:
+  HEX_SERVER_URL (public address used in invite links) and HEX_BACKEND_URL (API/WS/admin base).
+  Empty = page origin, so IP / localhost / FQDN all work without a rebuild. The nginx image
+  regenerates /config.js from those vars via a /docker-entrypoint.d hook; index.html loads it
+  before the app. The admin panel is reached on the backend's own host (nginx only proxies
+  /Api, /Ws, /Health) — hence the separate backend FQDN.
+
+Invite link / join (Frontend Inviting.tsx, Lobby.tsx, Clipboard.ts)
+- Invite links are built from the configured ServerUrl so a shared link works for the recipient.
+- Copy was failing 100% of the time because navigator.clipboard only exists in a secure context
+  (it isn't on a plain-http LAN IP). New CopyText falls back to a hidden-textarea + execCommand.
+- The lobby's Invite mode gained a "join a friend's game" row: paste a raw code or a full
+  …?invite=CODE link and it sends JoinInvite (ParseInviteCode extracts the code).
+
+Board (Frontend HexBoard.tsx, BoardGeometry.ts, App.css)
+- Rim edges: segments are inset with round caps so each side reads as one continuous border and
+  Red/Blue only kiss at the corners (no more separated rectangles).
+- Recent move: the whole stone is tinted to a brighter accent of its own player colour
+  (--PlayerRedBright/--PlayerBlueBright) instead of the old yellow dot.
+- Explicit single layer order (cells → rims → planning overlay → winning path) removes z-fighting.
+- Planning: highlights draw on a smaller inset hexagon so the tile gaps still show; a left click
+  while any plan is on the board only erases it (it no longer also plays a move).
+
+Board-size picker overflow (Frontend Segmented.tsx, App.css)
+- Segmented gained a Scroll mode: when the options can't all fit (small/zoomed screens) the bar
+  scrolls horizontally and auto-centres the selected option instead of squashing. Used by the
+  board-size selector.
+
+UI colours — live theme overrides (Backend SettingsService/AdminRouter/AdminPage/HttpRouter,
+Frontend Theme.ts, Main.tsx)
+- A prototyping tool for trying colour schemes without a rebuild (and likely removed for release).
+  Admin "UI colours" card edits the themeable CSS vars; values are sanitized (hex/rgb/hsl/named
+  only, leading -- stripped) and persisted as JSON in the existing Settings store. Public
+  GET /Api/Theme returns the map; the client applies it to :root on load (ApplyRemoteTheme),
+  on top of the baked App.css defaults. Empty map = baked defaults.
+
+Engine layer reorg (Backend Engines/)
+- EngineView (new): a GameView wrapper with named accessors for engine authors — Me/Opponent,
+  StoneAt/IsEmpty, EmptyCells(), and documented stone values (0 empty, 1 Red, 2 Blue, row-major).
+  EngineDriver.ChooseMove now receives an EngineView; the session wraps the snapshot.
+- ./Engines/Engines/ (new): each file default-exports an EngineDriver. LoadDrivers auto-discovers
+  them at startup (Bun.Glob) — drop in a file and it's a managed engine, no wiring. FirstFree moved
+  here as the reference engine.
+- Managed engines now come from code: one participant is seeded per discovered driver
+  (EnsureManagedEngines). The admin "add managed engine" form/endpoint is gone; deleting a managed
+  engine in admin removes it until the next restart (delete the driver file to remove for good).
+- Admin page: external-engine card now documents the connect flow (Ws URL with EngineId/Token,
+  the EngineState push shape, and the MakeMove/Swap replies).
