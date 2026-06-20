@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hex
+      POSTGRES_PASSWORD: hex
+      POSTGRES_DB: hex
+    volumes:
+      - HexData:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hex -d hex"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./Backend
+    ports:
+      # Direct host access to backend-only endpoints (engine registration, admin,
+      # move-history analysis) and for the dev frontend / self-hosted engines.
+      # Gameplay from the bundled frontend is proxied internally via nginx.
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=postgres://hex:hex@postgres:5432/hex
+      # Forfeit a match when a player is idle (unlimited games) or disconnected this long (ms).
+      - ABANDON_TIMEOUT_MS=120000
+      # Set a value to allow admin registration of managed engines via X-Admin-Token.
+      # - ADMIN_TOKEN=change-me
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./Frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  HexData:

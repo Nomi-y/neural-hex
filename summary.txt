@@ -1,0 +1,124 @@
+Hex — Iteration 2 summary
+=========================
+
+This iteration delivered the requested changes and features. All backend tests pass (35),
+both projects typecheck and build, and the full Docker Compose stack was verified end-to-end.
+
+1) Persistence: SQLite -> PostgreSQL + Drizzle ORM
+--------------------------------------------------
+- Removed bun:sqlite. State now lives in PostgreSQL, accessed via Drizzle ORM (schema and
+  queries in TypeScript; no hand-written SQL; migrations generated with drizzle-kit and run
+  automatically on startup).
+- Why Postgres: an external networked DB makes server restarts/upgrades safe (state isn't
+  trapped in a process), gives the best analytical-query story for match history, and is the
+  seam for running multiple backend instances later.
+- Dependency injection retained and extended: the `Store` interface (Persistence/Store.ts)
+  has `DrizzleStore` (prod) and `InMemoryStore` (tests). Tests need no database.
+- Schema (Persistence/Schema.ts): Participants, Matches, Moves.
+- Active games stay in memory for low latency and are written through to Postgres on every
+  change (match row + append-only move rows in one transaction).
+
+Dev database (standalone container, host port 5433):
+  docker run -d --name hexpg -e POSTGRES_PASSWORD=hex -e POSTGRES_USER=hex -e POSTGRES_DB=hex \
+    -p 5433:5432 postgres:16-alpine
+  DATABASE_URL=postgres://hex:hex@localhost:5433/hex   (this is the in-code dev default)
+
+Compose integration (done): docker-compose.yml now has a postgres:16-alpine service with a
+named volume (HexData) and a healthcheck; the backend gained
+DATABASE_URL=postgres://hex:hex@postgres:5432/hex and depends_on postgres (service_healthy).
+Migrations run on backend startup. Moving dev -> compose was configuration only; no code
+changes. Verified: `docker compose up --build` brings up postgres (healthy) -> backend
+(migrates + boots) -> frontend (nginx proxies /Ws, /Api, /Health).
+
+2) Move history (for analysis)
+------------------------------
+- Every move and swap is recorded append-only in the Moves table: ordinal, colour, kind
+  (Place/Swap), row/col, clock remaining after, think time (ms), timestamp.
+- Exposed for analysis at GET /Api/Matches/:id/Moves.
+
+3) Swap (pie) rule
+------------------
+- Implemented in GameInstance: after the first move the game enters AwaitingSwap; the decider
+  may Swap (take over the opening — participants exchange colours, board stays) or decline by
+  simply playing a move. New `Swap` client message; GameView carries Phase + CanSwap.
+
+4) Match-creation options
+-------------------------
+- GameSettings gained Colour preference (Red/Blue/Random) and a SwapRule toggle. Honoured for
+  invites and engine challenges; random queue assigns colours randomly. Frontend lobby
+  exposes all of it.
+
+5) PlayerId -> Participant model (accounts-ready, no login yet)
+--------------------------------------------------------------
+- Introduced a Participant hierarchy: HumanParticipant (max 1 concurrent match) and
+  EngineParticipant (unlimited) — the inheritance design you suggested. Matches reference
+  participant ids; humans are lazily persisted on first sight. This is the slot accounts plug
+  into later; no login/account features were added.
+
+6) Engines (foundations + orchestrator)
+---------------------------------------
+- Managed (in-process) engines: EngineOrchestrator drives a move via an EngineDriver whenever
+  it is the engine's turn. EngineSession is the per-game "instance" the orchestrator manages
+  (a subprocess/remote driver can slot behind the same interface later). Bundled stub:
+  FirstFreeDriver (plays the first empty cell). A default managed engine is auto-provisioned.
+- External / self-hosted engines: any player registers one (POST /Api/Engines/External -> a
+  one-time token). The engine connects over WebSocket (/Ws?EngineId=..&Token=..), receives
+  game-scoped EngineState, and replies with MakeMove/Swap carrying a GameId. Verified: an
+  external engine played a full game via token auth.
+- Admin-registered managed engines: POST /Api/Engines/Managed with X-Admin-Token (set the
+  ADMIN_TOKEN env to enable).
+- Note for later (as you flagged): an orchestrator that launches/supervises engine OS
+  processes/instances is a natural extension of EngineSession.
+
+7) Clock rehydration across restarts
+------------------------------------
+- On boot, active games are rehydrated and their clocks are rebased to the load time, so a
+  player to move is never charged for server downtime. This is what makes swapping servers
+  for an update safe. (With state in Postgres, the whole story is now robust.)
+
+Environment variables
+----------------------
+Backend:  PORT (3001), DATABASE_URL (dev default postgres://hex:hex@localhost:5433/hex),
+          ADMIN_TOKEN ("" disables managed-engine registration).
+Frontend: VITE_BACKEND_HTTP / VITE_BACKEND_WS (default: page origin; dev set in
+          .env.development to localhost:3001).
+Compose:  postgres POSTGRES_USER/PASSWORD/DB=hex; backend DATABASE_URL points at the
+          postgres service; frontend published on :8080.
+
+Kept out of scope (unchanged): no accounts/login, no analysis UI beyond the moves endpoint,
+no ranking, and no in-process engine OS-process supervisor yet.
+
+
+Hex — Iteration 3 summary (hardening)
+=====================================
+All 40 backend tests pass; both projects typecheck/build; the live compose stack was
+re-verified after these changes.
+
+1) Random match presets
+   Random matchmaking is restricted to 3 server presets (Blitz 11×11 3+2, Rapid 13×13 5+5,
+   Classic 11×11 10+10) to stop queue fragmentation. JoinQueue now carries a PresetId; presets
+   are exposed via GET /Api/Limits. Invite and engine play keep full options.
+
+2) Ranked-ready matchmaker
+   Added a QueueStrategy seam (Matchmaking/QueueStrategy.ts) with RandomQueueStrategy over a
+   per-preset waiting pool. Swap in a rating-aware strategy later to make random -> ranked; no
+   other changes needed. (Behaviour today is unchanged: random.)
+
+3) Engine play
+   Engine games are forced to unlimited time (server overrides the requested clock). Engines
+   now declare a supported board-size range (Min/MaxBoardSize on the engine record + a new
+   migration); challenges outside the range are rejected. The driver interface carries the
+   range; FirstFree supports the full 5–19. The client clamps the board selector to the chosen
+   engine's range and hides the clock for engine play. Verified live: out-of-range challenge
+   rejected; Fischer request coerced to unlimited.
+
+4) Abandonment cleanup
+   A match is forfeit (WinReason "Abandoned") when the player to move is idle past
+   ABANDON_TIMEOUT_MS in unlimited games, or a participant stays disconnected that long in any
+   game. Implemented as: GameInstance.CheckDeadlines (clock flag OR idle), plus a
+   disconnect-forfeit monitor in SessionService. Threshold is a single env var
+   (ABANDON_TIMEOUT_MS, default 120000), kept as one knob for a future admin dashboard. Added
+   to docker-compose backend env.
+
+Compose: backend now publishes port 3001 to the host (direct access to backend-only endpoints
+and the dev frontend / self-hosted engines), in addition to the internal nginx proxy.

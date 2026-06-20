@@ -1,0 +1,7 @@
+# Backend and Frontend are tracked in their own git repositories.
+Backend/
+Frontend/
+
+*.log
+.DS_Store
+.env
