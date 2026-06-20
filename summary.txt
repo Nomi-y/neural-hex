@@ -341,9 +341,12 @@ Frontend Theme.ts, Main.tsx)
   on top of the baked App.css defaults. Empty map = baked defaults.
 
 Engine layer reorg (Backend Engines/)
-- EngineView (new): a GameView wrapper with named accessors for engine authors — Me/Opponent,
-  StoneAt/IsEmpty, EmptyCells(), and documented stone values (0 empty, 1 Red, 2 Blue, row-major).
-  EngineDriver.ChooseMove now receives an EngineView; the session wraps the snapshot.
+- EngineView (new): a GameView wrapper with named accessors for engine authors — Me/Opponent and
+  their numeric MyStone/OpponentStone, StoneAt/StoneAtIndex/IsEmpty, Index/RowColOf/InBounds
+  coordinate conversion, Neighbours() hex adjacency, EmptyCells()/StonesOf(colour), and documented
+  stone values (0 empty, 1 Red, 2 Blue, row-major). The conversion/adjacency helpers delegate to
+  the existing Game/HexBoard functions. EngineDriver.ChooseMove now receives an EngineView; the
+  session wraps the snapshot.
 - ./Engines/Engines/ (new): each file default-exports an EngineDriver. LoadDrivers auto-discovers
   them at startup (Bun.Glob) — drop in a file and it's a managed engine, no wiring. FirstFree moved
   here as the reference engine.
