@@ -122,3 +122,47 @@ re-verified after these changes.
 
 Compose: backend now publishes port 3001 to the host (direct access to backend-only endpoints
 and the dev frontend / self-hosted engines), in addition to the internal nginx proxy.
+
+
+Hex — Iteration 4 summary
+=========================
+All 46 backend tests pass; both projects typecheck/build; full stack re-verified live.
+
+1) Submodules
+   Backend/ and Frontend/ are now proper git submodules of the root (absorbgitdirs; no remote
+   required — each registered as its own authoritative upstream via local-path URLs in
+   .gitmodules). Bump a pointer with: commit inside the subdir, then `git add Backend` (or
+   Frontend) + commit in the root.
+
+2) Identity / sessions
+   Identity is server-issued: each human gets a PlayerId + rotating session token (WS handshake
+   validates+rotates, emits a Session message the client stores). Missing/invalid token -> a
+   fresh anonymous identity. GET /Api/Session checks validity. The seam a future login plugs
+   into.
+
+3) Stats / data
+   No derived data is stored. New endpoints: GET /Api/Participants/:id (profile) and
+   /Api/Participants/:id/Matches (raw finished matches). The frontend "My Stats" page computes
+   wins/losses/win-rate/by-colour from the raw match list. Engines are participants too, so the
+   same endpoints apply to them.
+
+4) Admin interface (isolated, minimal surface)
+   Served at /Admin and /Admin/Api/* on the backend port only; the public nginx does NOT proxy
+   /Admin, so it is unreachable from the user origin or by navigating the app (verified). Login:
+   dev mode (ADMIN_DEV_LOGIN=true, default) is open; production (false) requires an SSH-key
+   challenge-response verified with ssh-keygen against ADMIN_PUBLIC_KEYS / runtime trusted keys
+   (verified end-to-end with a generated key). Admin manages: runtime abandonment timeout
+   (live), engines (registration now admin-only), and trusted keys. openssh-client added to the
+   backend image.
+
+5) Frontend fixes / freshen-up
+   - Outgoing messages are queued until the socket opens, fixing "buttons sometimes do nothing"
+     on early clicks.
+   - Play / My Stats nav (admin intentionally not linked anywhere).
+   - Player-facing engine registration removed (now admin-only).
+
+6) Bug: engines no longer show as 'disconnected' in a match (managed engines are always present).
+
+Env (new): ADMIN_DEV_LOGIN (default true), ADMIN_PUBLIC_KEYS (newline-separated). ABANDON_TIMEOUT_MS
+is now just the initial value; the live value is admin-editable. No migration needed in dev (DB
+wiped on rebuild).

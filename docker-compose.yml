@@ -24,10 +24,12 @@ services:
     environment:
       - PORT=3001
       - DATABASE_URL=postgres://hex:hex@postgres:5432/hex
-      # Forfeit a match when a player is idle (unlimited games) or disconnected this long (ms).
+      # Initial forfeit threshold (ms); changeable live from the admin interface.
       - ABANDON_TIMEOUT_MS=120000
-      # Set a value to allow admin registration of managed engines via X-Admin-Token.
-      # - ADMIN_TOKEN=change-me
+      # Admin auth: dev mode (default true) lets anyone log into /Admin. In production set
+      # ADMIN_DEV_LOGIN=false and provide trusted SSH public keys (newline-separated).
+      - ADMIN_DEV_LOGIN=true
+      # - ADMIN_PUBLIC_KEYS=ssh-ed25519 AAAA... admin@host
     depends_on:
       postgres:
         condition: service_healthy
