@@ -440,3 +440,18 @@ Compatibility
   reads the same. The icon was moved from the repo root to Frontend/public/ (favicon + asset).
 - Process note: this was done on a feature branch (feature/frontend-redesign) and merged back, per
   the new branch-per-feature workflow requested in frontend.md.
+
+Hex — Iteration 8 follow-up (redesign retouches, frontend only)
+---------------------------------------------------------------
+Four fixes from review; typechecks/builds, each verified live by headless screenshot.
+- Logo: now two strokes, each three consecutive hexagon edges — clockwise from the top, Red
+  (top→right) then Blue (back to start) — a red/blue split. Spins a full 120° on hover (over the
+  brand, the lobby mark, or the logo itself). favicon.svg updated to match.
+- Board-size picker: the scroll variant now always fills 100% width and hides its scrollbar (a
+  thin track over the rounded pill clipped the corners and looked jarring); active still auto-centres.
+- Auth box: fields are vertically stacked now (username / password / submit each full width). A new
+  AuthVersion counter in App bumps on login/register/logout so both the profile page AND the header
+  account pill refetch identity immediately after register (register keeps the same participant id,
+  so neither updated before) — no manual refresh needed.
+- "Nah, I'm good" dismiss: collapses the prompt and re-homes it as a closed accordion at the bottom
+  of the profile (persisted in localStorage), expandable to sign in or register later.
