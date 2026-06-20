@@ -26,10 +26,10 @@ services:
       - DATABASE_URL=postgres://hex:hex@postgres:5432/hex
       # Initial forfeit threshold (ms); changeable live from the admin interface.
       - ABANDON_TIMEOUT_MS=120000
-      # Admin auth: dev mode (default true) lets anyone log into /Admin. In production set
-      # ADMIN_DEV_LOGIN=false and provide trusted SSH public keys (newline-separated).
-      - ADMIN_DEV_LOGIN=true
-      # - ADMIN_PUBLIC_KEYS=ssh-ed25519 AAAA... admin@host
+      # Admin auth: dev login is OFF, so /Admin requires an SSH-key signature from a trusted
+      # key below (newline-separated authorized_keys lines). Source of truth: ./hex-admin.pub.
+      - ADMIN_DEV_LOGIN=false
+      - ADMIN_PUBLIC_KEYS=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPHXbauCbloYsLBxdKncwQHHw5MLQ5nVDlTx7adh1ZwG nomi@garlicbread
     depends_on:
       postgres:
         condition: service_healthy
