@@ -222,3 +222,30 @@ Frontend
 No new env vars or migrations (presets persist in the existing Settings table; CapMs rides in the
 existing clock jsonb). To advance the pins: commit inside Backend/ and Frontend/, then
 `git add Backend Frontend` + commit in the root.
+
+
+Hex — Iteration 5 follow-up (UI-design 2, frontend only)
+========================================================
+A second visual pass on the lobby per todos4.md. Typechecks + builds; the frontend container was
+rebuilt and every change re-verified live by screenshot. No backend changes.
+
+Why: the first pass read a little flat and "samey", leaned on gradient fills + blurred glows the
+user disliked, and the lobby controls (a slider-style chip row, a squished engine <select>, a
+broken swap toggle) needed polish.
+
+- Contrast + flat styling: darker background and more separation between surface levels; all
+  blurred glow box-shadows around buttons/focus/running-clock removed (focus is now a crisp
+  outline). Gradient-filled buttons are gone — primary actions and the segmented active state are
+  "hollow" (transparent + accent border/text).
+- Segmented control extracted to its own component (Components/Segmented.tsx) with a sliding
+  active indicator that swooshes to the clicked option (measured from the DOM, re-measured on
+  resize). Board size now uses this segmented design instead of the chip row.
+- Lobby rule list reordered: board size (no label) → Play as (left) + Swap rule (right) on one
+  row → engine selector. Dropped the "Engine games are unlimited time" line and other helper
+  text. Hovering the Play as / Swap rule labels shows an info tooltip (which colour moves first;
+  one-sentence swap-rule explanation); right-aligned labels anchor their bubble to the right.
+- Swap toggle rebuilt as a proper sliding switch (track + knob) — the old knob barely moved.
+- Queue preset buttons given a 4:3 aspect ratio.
+- Engine selection is now a button showing the current engine that opens a dialog
+  (Components/EnginePicker.tsx): a scrollable list with a single-open accordion per engine (a
+  chevron reveals Kind / board-size range / id), replacing the cramped dropdown.
