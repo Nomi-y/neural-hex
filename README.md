@@ -9,9 +9,10 @@ database:
   rules, swap rule, clocks, engines, and move history; persisted to PostgreSQL via Drizzle.
 - **[`Frontend/`](./Frontend)** — React + TypeScript client (Vite), served by nginx.
 
-This root is its own git repository tracking the orchestration glue (compose file, docs). The
-`Backend/` and `Frontend/` directories are independent git repositories and are intentionally
-git-ignored here, so each component is versioned on its own.
+This root is its own git repository tracking the orchestration glue (compose file, docs).
+`Backend/` and `Frontend/` are **git submodules** (no remote — local-path `.gitmodules`), so the
+root records exactly which commit of each component it pins. To advance a pin: commit inside
+`Backend/` (or `Frontend/`), then `git add Backend && git commit` in the root.
 
 ## Game
 
