@@ -249,3 +249,45 @@ broken swap toggle) needed polish.
 - Engine selection is now a button showing the current engine that opens a dialog
   (Components/EnginePicker.tsx): a scrollable list with a single-open accordion per engine (a
   chevron reveals Kind / board-size range / id), replacing the cramped dropdown.
+
+
+Hex — Iteration 5 follow-up (UI-design 3, todos5.md)
+====================================================
+Board accuracy, lobby/invite polish, and a new colour palette. Backend tests pass (51); both
+projects typecheck/build; the whole compose stack was rebuilt and every change verified live by
+screenshot (rims, alternating plan stones, live-drawn arrow, resign+refresh→lobby, invite flow,
+engine dialog, steppers).
+
+Backend (one change):
+- Resign + refresh now lands in the lobby. A finished game is terminal, so on (re)connect it is
+  dropped for that participant instead of rejoining a result screen; LeaveGame always re-pushes
+  state so a player still drops to the lobby even if the opponent cleaned the game up first
+  (SessionService.OnConnect / LeaveGame). Active games still rejoin normally.
+
+Board (Components/HexBoard.tsx, Game/BoardGeometry.ts, CSS):
+- Border rim segments are inset and butt-capped, so Red and Blue meet cleanly at the corners
+  (no overlap) and a per-hex notch is visible along the border too — fixing both the "messy
+  overlap" and the "no gap on border stones" nitpicks.
+- Planning highlights are translucent player-coloured stones that alternate Red/Blue with each
+  right-click (seeded from the side to move) to read as a sequence of alternating moves.
+- Planning arrows render live while dragging (a dashed draft arrow follows the cursor cell) and
+  commit on release.
+- The winning connection is drawn in its own overlay layer above cells/rims/markers, fixing the
+  earlier z-order bleed-through.
+
+Lobby / invite (Components/Lobby.tsx, Stepper.tsx, EnginePicker.tsx, Inviting.tsx, CSS):
+- Clock base/increment use −/+ stepper buttons instead of native number spinners.
+- Engine field takes half the width; the misleading native-select caret is replaced by a gentle
+  custom V chevron. The dialog dropped the redundant radio (the outline marks selection) and the
+  name/chevron separator line, closes on Esc, and uses the same V chevron for the accordion.
+- Invite screen: more square panel; the link itself is the click-to-copy control (no separate
+  Copy button) and is auto-copied to the clipboard on creation; Cancel now asks for confirmation
+  via the red danger modal.
+
+Motion + colour:
+- The segmented/toggle animations use an ease-out (expo-style) curve instead of the previous
+  overshoot, removing the bounce.
+- New palette: a teal PRIMARY for interactive surfaces (buttons, selection, toggle-on) and a gold
+  ACCENT for board/attention highlights (last move, winning path, arrows, info). Both are kept
+  clear of the red/blue player colours so nothing on the board is ambiguous. Player colours
+  remain in their own vars.
