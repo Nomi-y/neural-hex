@@ -355,3 +355,40 @@ Engine layer reorg (Backend Engines/)
   engine in admin removes it until the next restart (delete the driver file to remove for good).
 - Admin page: external-engine card now documents the connect flow (Ws URL with EngineId/Token,
   the EngineState push shape, and the MakeMove/Swap replies).
+
+
+Hex — Iteration 7 summary (todos7.md — user accounts)
+=====================================================
+Optional username/password accounts on top of seamless anonymous play. Backend typechecks; tests
+pass (57, +1 auth test); both projects build; full stack rebuilt and the register→login→profile
+flow, duplicate/username rules, admin user list/delete, and argon2id storage verified live. Why:
+the first step toward identity (named players, cross-device stats, and later elo/ranked).
+
+Identity model
+- A registered user is just a HumanParticipant with a Username (unique, case-insensitive) and a
+  PasswordHash. Anonymous play is unchanged — no account needed. Registration *upgrades the
+  current anonymous participant in place* (keeps its id and match history); login switches the
+  client to that account's id + a fresh session token. Logout drops the stored identity so the
+  next connection is issued a new anonymous one.
+- Passwords: Bun.password (argon2id, salt embedded) — production-ready. No length/complexity
+  rules and no email/reset (out of scope); usernames are only checked for duplicates.
+- Ranking/elo is intentionally not implemented, but the seams are in place (per-participant
+  records, match history carrying OpponentId/OpponentKind) so it can be added later.
+
+Backend
+- Participants gain Username / PasswordHash / RegisteredAt columns + a unique Username index
+  (migration 0004). Store adds GetParticipantByUsername (case-insensitive) and ListUsers.
+- ParticipantService.RegisterUser/LoginUser; SessionService.Register (guarded by the caller's
+  valid session) / Login / ListUsers / DeleteUser. Public POST /Api/Register and /Api/Login.
+- ParticipantProfile now carries Username + RegisteredAt; MatchSummary carries OpponentId so the
+  frontend can link to an opponent's profile.
+- Admin: GET state includes Users; DELETE /Admin/Api/Users/:id; admin page has a Users card
+  (username, joined date, delete).
+
+Frontend
+- The "My Stats" tab became a profile button in the header showing the username (or "Guest").
+  The profile page (Components/Profile.tsx, replacing StatsPage) shows username + join date, the
+  player/engine stat tabs, and either a login/register box (when a guest) or a Log out button
+  (when signed in). Opponent names in history are clickable and open that player's profile.
+- Auth plumbing: Game/Auth.ts (Register/Login fetch helpers), Config.ClearSession, and
+  Connection.Reconnect (rebinds the WS to the new identity after login/logout).
