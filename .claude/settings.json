@@ -1,28 +1,27 @@
 {
-    "permissions": {
-        "allow": [
-            "Bash(*)",
-            "WebFetch",
-            "PowerShell(*)"
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "WebFetch",
+      "PowerShell(*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/Context.sh\""
+          }
         ]
-    },
-    "enabledPlugins": {
-        "frontend-design@claude-plugins-official": true,
-        "typescript-lsp@claude-plugins-official": true,
-        "playwright@claude-plugins-official": true,
-        "figma@claude-plugins-official": true,
-        "chrome-devtools-mcp@claude-plugins-official": true
-    },
-    "hooks": {
-        "SessionStart": [
-            {
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/Context.sh\""
-                    }
-                ]
-            }
-        ]
-    }
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "figma@claude-plugins-official": true,
+    "chrome-devtools-mcp@claude-plugins-official": true
+  }
 }
