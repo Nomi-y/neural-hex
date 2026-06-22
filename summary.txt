@@ -631,3 +631,18 @@ Graphics — small board-size pickers centre instead of hugging an edge
   when the options overflow so the first ones are never clipped or unreachable.
 
 - Process: feature branch feature/delay-zero-base-and-timeout-fix in both submodules, merged to master.
+
+Board limits — no upper ceiling, and engines clamp to the live limits
+- The admin board range may now run from 3 up with no hard maximum (BoardSizeHardMax became a
+  MAX_SAFE_INTEGER sentinel rather than 25), so larger boards are allowed without code changes. The
+  admin board inputs drop their `max` attribute and the hint now reads "minimum 3, no upper limit".
+- The player-facing engine list (/Api/Engines) now narrows each engine's advertised board range to its
+  overlap with the live admin limits, and hides any engine whose supported sizes fall entirely outside
+  them (you could never start such a game). Added SessionService.ListPlayableEngines for this; the admin
+  list (SessionService.ListEngines) is deliberately left raw so admins always see every engine's true
+  configured range. Game-creation validation already constrains board size to the live limits, so the
+  clamp is purely about what players are offered.
+- Added a managed test engine FirstFree2 (boards 7–9, a First-Free clone) as a fixture to exercise the
+  clamp/hide behaviour. Verified live: against limits 9–25 it shows 9–9, and the unit test covers the
+  full-overlap, partial-overlap (8–12 → 8–9) and no-overlap (hidden) cases.
+- Process: feature branch feature/board-limits-and-engine-clamp in the Backend submodule, merged to master.
