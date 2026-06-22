@@ -825,3 +825,37 @@ UI — browser-history navigation (back/forward, mouse side-buttons, swipe)
   forward re-enters the replay; controls are icon-only and grouped; the screenshot view hides the dock
   and numbers all 18 stones; the swap badge and Esc behave; nav-clear and refresh-restore still hold.
 - Process: feature branch feature/replay-touchups in the Frontend submodule, merged to master.
+
+
+Hex — Iteration 15 summary (todos13.md follow-ups): swap-on-stone marking, a fixed/maximised
+screenshot view, a replay clock, and match-history clock + trivial-game filtering.
+
+Swap — marked on the stone, not in the corner
+- The earlier corner swap badge is replaced by the ⇄ glyph drawn directly on the swapped stone (the
+  opening move's cell, once a swap is in the log). Presence/absence on that stone alone now tells you
+  whether the opening was stolen — in live play, in the replay, and in the screenshot view. In the
+  numbered screenshot view the ⇄ takes the place of that stone's move number (so it reads as "this is
+  the swapped stone" rather than "turn 1").
+
+Screenshot view — kept in the viewport, Close below the board
+- The board-only view is now rendered through a portal to <body>, so the view's rise-in transform can
+  never offset the fixed overlay (the cause of the board sitting too high / clipped). It is a centred
+  column: the board fills the space above a single Close button and, with preserveAspectRatio="meet",
+  letterboxes within its box so it is always fully visible at any board size; the Close control sits
+  below it, in flow, never pushed off-screen. Esc and the browser back control still also exit.
+
+Replay — a clock for timed games
+- Timed matches now show each side's clock in the viewer, reflecting the position: at each ply a
+  colour's time is the RemainingMsAfter of its most recent move so far, falling back to the starting
+  time before it has moved. The replay payload gained ClockInitialMs (the per-clock starting time,
+  from the snapshot's CapMs; null when unlimited) so move 0 shows the full clock. Unlimited games show
+  no clock. Verified end-to-end against a seeded Fischer game: 1:00/1:00 at the start stepping to
+  0:58/0:57 by the end.
+
+Match history — clock column, and trivial games hidden
+- The history table gained a Clock column reading "Timed" or "Unlimited" (from the match's clock mode).
+- Games with 0–1 total moves (an instant resign/abandon — nobody really played) are no longer shown in
+  the history or counted in the profile stats; they remain stored server-side untouched, for later
+  ranked play. The filter is applied in the profile view, leaving the raw GetMatchHistory API (and its
+  tests) deliberately unchanged.
+- Process: feature branch feature/replay-touchups-2 in both submodules, merged to master.
