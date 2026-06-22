@@ -717,3 +717,64 @@ Security review — fixed an unauthenticated live-state IDOR (todos12.md)
   (no spoofing/impersonation), array-arg ssh-keygen for admin SSHSIG (no shell injection), HttpOnly +
   SameSite=Strict admin cookies, Esc()-escaped admin HTML, and colour-grammar-sanitised theme values.
 - Process: feature branch feature/security-state-idor in the Backend submodule, merged to master.
+
+
+Hex — Iteration 13 summary (match-history.md): a turn-by-turn match replay viewer, built purely
+client-side, plus the groundwork notes for future engine analysis.
+
+Replay — finished matches are now replayable turn by turn from any profile
+- The directive: hovering a match-history row highlights it and clicking anywhere in the row (except
+  the opponent name, which still links to their profile) opens a turn-by-turn replay of that game.
+  The whole <tr> is the hit target; the opponent-name button stops propagation so it keeps its old
+  "view profile" behaviour rather than also entering the replay.
+- The viewer reuses the live game board (HexBoard with Interactive=false, so no hover affordance or
+  move-playing, but the right-click planning overlay — highlights and arrows — stays fully usable,
+  exactly as the directive asked). A new MatchReplay component supplies the panel: both seats, the
+  result, the move/total counter, the transport controls and a clickable timeline.
+- Controls: the replay opens paused at move 0. Play auto-advances one move per second (admin-tunable,
+  see below) and pauses itself when it reaches the end; pause/step/jump take effect immediately and
+  pause playback; clicking any move in the timeline jumps to that ply and pauses. Step-back/forward
+  and jump-to-start/end round out the transport.
+
+Replay — purely client-side after a single fetch
+- New GET /Api/Matches/:id/Replay returns everything needed to reconstruct and play a finished game on
+  the client in one request: board size, swap rule, both seats, the outcome (+ the persisted winning
+  path) and the full ordered move list (SessionService.GetMatchReplay; 404 for unknown or still-active
+  games — only finished games are replayable). The client rebuilds every intermediate position by
+  replaying the recorded placements in order (BuildReplayView), so no per-ply server round-trips and no
+  re-running win detection: the winning path is shown only once the whole game has been played back.
+  Verified live against a real 18-move 9×9 engine game — stepping adds stones one at a time and the
+  final position highlights Blue's 9-cell connecting row.
+
+Replay — survives a refresh, resets after idling out
+- The open replay (game id, ply, playing flag) is persisted to localStorage and restored on reload so a
+  refresh lands back exactly where the viewer left off — including resuming mid-playback. Each step
+  (including every auto-advance, which counts as watching) re-stamps the saved-at time, so the idle
+  clock only starts once playback truly stops. If the replay has sat idle past an admin-configurable
+  reset window, a refresh forgets it and the UI resets to the normal page instead. An Exit button (and
+  any navigation with a transition — Play, a profile, the brand/account) stops and clears the replay so
+  it is never restored later; this also means the user is never trapped in the replay across refreshes.
+
+Replay — two new admin-tunable, DB-persisted settings
+- ReplayMoveMs (default 1s, the auto-play cadence) and ReplayResetMs (default 5 min, the idle-reset
+  window) join the existing runtime settings: Config.Replay holds the defaults/bounds, SettingsService
+  loads/clamps/persists them like StatsRefreshMs/AdminTimeoutMs, the admin Settings tab gained two
+  inputs, and they round-trip through /Admin/Api/Settings + /Admin/Api/State. The two values the client
+  needs (cadence + reset window) are advertised on the public /Api/Limits so the viewer is fully
+  client-driven. Covered by Tests/Replay.test.ts (endpoint + reconstruction data + settings clamp/
+  persist) and an AdminRouter round-trip test; verified live end-to-end in a headless browser
+  (entry, step, timeline jump, win-path highlight, auto-play, refresh-restore, stale-reset, exit and
+  nav-clear all confirmed, no console errors).
+
+Engine analysis — scoped, not built (engine-analysis.md)
+- The directive asked, alongside the replay work, for a written feasibility study of engine-driven move
+  analysis (out of scope to implement). engine-analysis.md (authored as Claude, framed as a performed
+  analysis) records it: "good vs bad" reduces to a win-probability delta between the played move and the
+  engine's best, which our play-only engines don't expose — they return a move, not an evaluation. It
+  proposes an optional AnalyzeMatch capability on the engine contract, the request → analysis-engine →
+  store-in-DB → overlay-on-replay flow the directive sketched, and a difficulty table: the plumbing is
+  cheap (every seam — EngineView, async non-blocking driving, the external-engine socket, the Drizzle
+  store, and now the client-side replay with an obvious /Analysis endpoint sibling — already exists),
+  the expensive part is a genuinely strong evaluator, which it recommends plugging in as an external
+  engine rather than writing in-repo. The replay viewer was deliberately built to leave room for this.
+- Process: feature branch feature/match-replay in both submodules, merged to master.
