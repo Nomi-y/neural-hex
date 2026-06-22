@@ -859,3 +859,21 @@ Match history — clock column, and trivial games hidden
   ranked play. The filter is applied in the profile view, leaving the raw GetMatchHistory API (and its
   tests) deliberately unchanged.
 - Process: feature branch feature/replay-touchups-2 in both submodules, merged to master.
+
+
+Hex — Iteration 16 summary (todos13.md follow-up): replay clocks now simulate live, ticking like the
+in-game clock instead of showing static per-ply values. Frontend-only.
+
+Replay clock — simulated, ticking, shared with the live game
+- The previous replay clocks showed a static post-move value per ply, which jumped rather than ran.
+  Now the replay simulates the game: while playing, the side to move "thinks" for the move's think
+  time and its clock ticks down in real time from a per-turn anchor, then snaps to that move's recorded
+  RemainingMsAfter when the move lands (so it stays exact, increments included). The idle side holds;
+  when paused or stepping, both show their static recorded values (no drift).
+- The seat+clock card itself is now a single shared component (Components/PlayerCard), used by both the
+  live GameScreen and the replay viewer, so the two read identically (∞ for unlimited, the "+N" delay
+  badge, the running highlight). The replay highlights the side to move and tags the winner.
+- Verified against a seeded Fischer game: at the start both read 1:00; on Play the mover's clock ticks
+  down (1:00 → 0:59) and snaps to its recorded 0:58 on the move, the other side then ticks and settles
+  to 0:57; stepping back to a paused ply shows the exact recorded values with no drift.
+- Process: feature branch feature/replay-clock in the Frontend submodule, merged to master.
