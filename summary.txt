@@ -455,3 +455,51 @@ Four fixes from review; typechecks/builds, each verified live by headless screen
   so neither updated before) — no manual refresh needed.
 - "Nah, I'm good" dismiss: collapses the prompt and re-homes it as a closed accordion at the bottom
   of the profile (persisted in localStorage), expandable to sign in or register later.
+
+
+Hex — Iteration 9 summary (todos8.md — clock formats, multi-queue, logout fix)
+==============================================================================
+Three changes: a millisecond-based clock with extra time-control formats, a lobby that searches
+several presets at once, and a fix for a logout glitch. Backend typechecks and all 61 tests pass
+(+4 clock/queue tests); both projects build; every part was verified live against the running
+compose stack — an 11-check WebSocket run (multi-queue add/leave/match-cancels-all, cancel-all,
+the three timed modes accepted + an out-of-range clock rejected, and a credential-less reconnect
+issuing a fresh identity) plus headless screenshots of the queued lobby and the new clock editor
+(no console errors). Why: deeper time controls and parallel queues are table stakes for a
+lichess-style site, and the logout bug was a visible correctness wart.
+
+Clock — milliseconds + three timed modes
+- ClockSettings is now entirely in ms (BaseMs + IncrementMs/DelayMs), so the admin can express any
+  precision. Modes: Fischer (flat increment after each move, capped at the base), Bronstein (the
+  clock ticks immediately, then refunds the time spent up to the delay) and Delay (the main clock
+  is frozen for the per-turn delay, then ticks) — plus Unlimited. Engine games stay Unlimited.
+- GameClock collapsed the per-mode behaviour into one Mode + StepMs + CapMs model: ChargedElapsed
+  handles the Delay freeze, GiveBack handles the Fischer/Bronstein top-up. The snapshot now carries
+  Mode (so rehydration and the persisted Matches.ClockMode are accurate) and StepMs; the ClockView
+  gained ActiveDelayMs so the client freezes the running clock through the delay exactly as the
+  server does. SettingsSignature and ValidateClock cover all modes; Limits moved to ms
+  (BaseMs 1s–60m, StepMs 0–60s). RandomPresets are now Bullet/Blitz/Rapid/Classic in ms.
+- Lobby clock editor (Frontend Components/ClockEditor.tsx): a mode segmented control with a
+  plain-language blurb under it, and two pill fields (Base, Increment/Delay). Each field is a
+  typeable number with a clickable min/s suffix that flips the unit and reconverts — the value is
+  always carried up in ms. Replaces the old min+sec stepper.
+
+Match queue — wait on several presets at once
+- The single Idle/Searching states merged into one Lobby state carrying Queued: string[] (the
+  preset ids being searched). The Matchmaker keeps a per-player map of (presetId -> settings); a
+  player may queue many presets, the first match pulls them out of all of them, and pools are still
+  keyed by settings signature so identical presets share a queue. JoinQueue adds; LeaveQueue takes
+  an optional PresetId (one preset) or none (cancel every search). Queuing and inviting stay
+  mutually exclusive.
+- Lobby preset cards toggle their search on click and light up ("● Searching…") straight from the
+  server's Queued list — never optimistic local state, so the highlight can't drift. A hollow
+  "Cancel all searches" button eases in (grid-rows/opacity transition) once more than two are
+  active and clears them instantly.
+
+Logout glitch
+- Clicking Log out sometimes left the signed-in profile on screen: the account still exists
+  server-side, so leaving PlayerId pointed at it re-showed the logged-in view until the reconnect
+  round-trip landed. DoLogout now clears PlayerId immediately; the fresh anonymous id arrives via
+  OnSession a moment later. The new queue UI follows the same rule (render from authoritative
+  server state) so it can't reproduce the bug.
+- Process: done on feature branch feature/clock-and-queue in both submodules, merged to master.
