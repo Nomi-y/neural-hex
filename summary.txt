@@ -659,3 +659,21 @@ Engine profiles — engines are surfaced like player profiles
   then from the winner's profile clicked the engine through to its profile, which rendered its tracked
   record (24 games · 16–8 · 67%) and the just-played loss.
 - Process: feature branch feature/engine-profiles in the Frontend submodule, merged to master.
+
+Profile names, engine-profile shortcuts, and remembered lobby settings
+- Bug: match history showed opponents under the name snapshotted into the match row, so a player who
+  was an anonymous "Player-xxxx" when the game was played and registered afterwards still appeared under
+  the old id-based name (most visibly when viewing an engine's profile). GetMatchHistory now resolves
+  the opponent's *current* DisplayName (falling back to the stored name only if the participant is gone).
+- Engine profiles are now reachable straight from match setup: the engine picker shows a "View profile"
+  button for the selected engine, and the engine-selection dialog shows one inside each engine's expanded
+  details. The currently selected engine opens already expanded so its details (and that button) are
+  visible immediately. OnViewProfile is threaded App → PlayBody → Lobby → EnginePicker.
+- Sticky settings: the invite/engine game options (board size, swap, colour, clock, chosen engine) are
+  saved to localStorage and restored on load, so a refresh reopens the form as it was left. The opponent
+  tab itself still resets to matchmaking on reload, which the user confirmed is fine. ClockEditor gained
+  an optional Initial prop so a remembered clock re-seeds its fields.
+- Verified live in a headless browser: the picker/dialog View-profile buttons navigate to the engine
+  profile, the selected engine auto-expands, and swap-off + Bronstein survive a reload; the name fix was
+  confirmed end-to-end (a guest who beat the engine then registered shows under the new username).
+- Process: feature branch feature/profile-names-and-sticky-lobby in both submodules, merged to master.
