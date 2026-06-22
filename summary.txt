@@ -778,3 +778,50 @@ Engine analysis — scoped, not built (engine-analysis.md)
   the expensive part is a genuinely strong evaluator, which it recommends plugging in as an external
   engine rather than writing in-repo. The replay viewer was deliberately built to leave room for this.
 - Process: feature branch feature/match-replay in both submodules, merged to master.
+
+
+Hex — Iteration 14 summary (todos13.md): replay-viewer UI touch-ups — segmented icon controls,
+think-time playback, a board-level swap indicator, a screenshot board view, and real browser-history
+navigation. Frontend-only.
+
+Replay controls — one segmented icon bar, no text, consistent glyphs
+- The transport (jump-start / step-back / play-pause / step-forward / jump-end) is now a single
+  segmented pill styled like the board-size picker but without a sliding selection indicator (these
+  are actions, not a persisted choice). The text labels are gone; every button is an inline SVG icon
+  drawn on a uniform 24×24 grid, so the skip glyphs no longer render larger/recoloured than the step
+  glyphs (the old emoji ⏮/⏭ vs geometric ◀/▶ mismatch). The redundant "Start" entry was removed from
+  the move timeline — the jump-to-start control already covers it.
+
+Replay playback — paced by real think time
+- Auto-play no longer uses one fixed delay between moves. In a timed game the pause before each move
+  mirrors how long that player actually thought (clamped to 0.25–5s so instant moves still flash and a
+  long human think doesn't freeze the replay). Unlimited games — which includes every engine game —
+  keep the fixed, admin-configurable cadence. (All currently stored games are unlimited, so the
+  think-time branch is logic-verified rather than exercised against live data.)
+
+Board — a single swap indicator
+- The board never showed that a swap had taken place (the swap rule exchanges seats without moving a
+  stone). HexBoard now draws one corner badge (a ⇄ in a ringed circle) whenever the position includes
+  a swap, and nothing when it doesn't — so the symbol's presence/absence alone tells you whether the
+  opening was stolen. It's derived from the move list, so it appears in live play, in the replay, and
+  in the screenshot view automatically; verified it shows post-swap and is absent before the swap ply.
+
+Replay — a board-only "screenshot" view
+- A new board-view button in the replay header opens a full-viewport view that hides the side dock and
+  blows the board up as large as it fits, showing the finished position with every stone numbered by
+  the turn it was played on (plus the swap badge). The intent: one screenshot fully describes the
+  match. A single Close button exits it; Esc and the browser back control exit it too.
+
+UI — browser-history navigation (back/forward, mouse side-buttons, swipe)
+- The app was a routeless SPA holding view state purely in React, so there was nothing for the browser
+  back/forward buttons (or the Mouse4/5 / swipe gestures that drive them) to act on. View state is now
+  mirrored into the History API: each navigation (Play, a profile, opening a replay, entering the
+  board view) pushes a serialisable snapshot, and a single popstate handler restores whichever
+  snapshot back/forward lands on — so all three input methods navigate views as expected, since they
+  all surface as popstate. Entering the screenshot view pushes an entry and leaving it pops one, so
+  Close, Esc and browser-back converge on the same exit. Leaving a replay by any route still clears its
+  stored session (so a refresh won't restore it). Verified end-to-end in a headless browser:
+  profile → replay → board-view, then back exits the board view, back returns to the profile, and
+  forward re-enters the replay; controls are icon-only and grouped; the screenshot view hides the dock
+  and numbers all 18 stones; the swap badge and Esc behave; nav-clear and refresh-restore still hold.
+- Process: feature branch feature/replay-touchups in the Frontend submodule, merged to master.
