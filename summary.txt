@@ -646,3 +646,16 @@ Board limits — no upper ceiling, and engines clamp to the live limits
   clamp/hide behaviour. Verified live: against limits 9–25 it shows 9–9, and the unit test covers the
   full-overlap, partial-overlap (8–12 → 8–9) and no-overlap (hidden) cases.
 - Process: feature branch feature/board-limits-and-engine-clamp in the Backend submodule, merged to master.
+
+Engine profiles — engines are surfaced like player profiles
+- Both managed and external engines already accumulated stats server-side (GetProfile/GetMatchHistory
+  are participant-agnostic, and board-decided engine games persist), but the UI never let you reach an
+  engine's profile. Now the profile match-history opponent name links through for engines too, not just
+  humans, so clicking an engine opens its profile with the same stat grid and recent-games table.
+- The profile header is engine-aware: viewing an engine shows "{Managed|External} engine · boards N–M ·
+  <id> · added <date>" instead of the human "Playing as guest" line. (Forfeited engine games are still
+  erased — the user opted to keep that — so engines only show games decided on the board.)
+- Verified end-to-end in a headless browser: played a real game to a connection win against First Free,
+  then from the winner's profile clicked the engine through to its profile, which rendered its tracked
+  record (24 games · 16–8 · 67%) and the just-played loss.
+- Process: feature branch feature/engine-profiles in the Frontend submodule, merged to master.
