@@ -546,3 +546,58 @@ Clock-selector layout bug
   explanation text drove. align-items:flex-start keeps the pills at their own constant width and the
   blurb wraps at a fixed max-width. Verified the row is a steady 370px across all four modes.
 - Process: feature branch feature/admin-data-and-stats in both submodules, merged to master.
+
+=================================================================================
+Hex — Iteration 11 summary (todos10.md): clock cadence, matchmaking polish, admin sidebar +
+sticky sessions + in-browser key signing
+=================================================================================
+Touch-ups across the lobby clock, the matchmaking page, and a substantial admin-page overhaul
+(collapsible sidebar, cookie-backed sticky login with an inactivity countdown, and optional
+in-browser SSH-key signing). Both projects typecheck and build; 66 backend tests pass (+1);
+verified live against the compose stack — the full admin auth/cookie/session/logout/timeout flow
+over HTTP with a real ed25519 signature, the browser WebCrypto signer accepted by `ssh-keygen -Y
+verify`, and headless screenshots of the admin login, the logged-in dashboard (sidebar + "Session
+15:00" countdown), the lobby ("Matchmaking" pill, flat cards) and the searching state ("Click to
+cancel"). The stack was left running per the brief; the secure compose config (ADMIN_DEV_LOGIN
+false) was restored after testing.
+
+Clock
+- Below 10s the player clocks now show hundredths (e.g. "5.34s") and the game screen ticks at 50ms
+  instead of 200ms, so the final seconds read like a stopwatch. FormatClock exports ClockUrgentMs as
+  the shared threshold; GameScreen derives an Urgent flag from the running clock and picks the
+  interval from it (and reschedules when it crosses).
+
+Matchmaking page
+- Removed the gradient overlay and the hover lift/translate from the preset cards — they were the
+  "movement animation"; the active (searching) card is now a flat highlighted fill, not a gradient.
+- The "Cancel all searches" button now appears at two or more active queues (was three+).
+- Each searching card shows a quiet "Click to cancel" hint at the bottom (.PresetHint).
+- Renamed the lobby mode pill "Random" → "Matchmaking" (label only; the internal value stays Random
+  so the board/clock logic is untouched).
+
+Admin — sidebar nav
+- The horizontal tab bar became a left sidebar (.Sidebar / .NavItem) toggled by a hamburger
+  (ToggleSidebar adds .Collapsed). The sidebar also holds the new Sign-out button under a divider.
+
+Admin — sticky login + inactivity timeout
+- The session token now rides in an HttpOnly, SameSite=Strict cookie (AdminSession.CookieName)
+  scoped to /Admin, so a refresh stays logged in. Page load calls GET /Admin/Api/Session to resume;
+  POST /Admin/Api/Logout clears the cookie and session. Page scripts never see the token.
+- AdminAuth sessions are a sliding window: every Verify (i.e. every authenticated action) pushes the
+  expiry out by the live timeout, so an action doubles as the inactivity heartbeat. The client mirrors
+  this by resetting its local countdown on each successful request.
+- The inactivity timeout is admin-editable (AdminSession 1min–24h, default 15min) and persisted in
+  SettingsService (AdminTimeoutMs), surfaced in the Server tab as minutes.
+- A live "Session M:SS" countdown sits in the top bar, kept clear of the nav and the title, and turns
+  amber under a minute. When it hits zero the client logs out with a message; reopening/refreshing
+  after the window has lapsed 401s on the session check and returns to the login screen.
+
+Admin — in-browser key signing (optional, secure)
+- The login screen offers a file picker that signs the challenge entirely in the browser: it parses
+  an unencrypted OpenSSH ed25519 private key, builds the exact SSHSIG blob `ssh-keygen -Y sign`
+  would, and signs it with WebCrypto Ed25519 — the key never leaves the page and only the signature
+  is posted. Anything unsupported (rsa, passphrase-protected keys, browsers without Ed25519) throws a
+  clear message and the manual `ssh-keygen` paste flow remains as the fallback. Verified the produced
+  SSHSIG is accepted by `ssh-keygen -Y verify`, and that the real browser file-picker path logs in
+  against a trusted key end-to-end.
+- Process: feature branch feature/admin-sidebar-sticky-sessions in both submodules, merged to master.
