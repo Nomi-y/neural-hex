@@ -677,3 +677,22 @@ Profile names, engine-profile shortcuts, and remembered lobby settings
   profile, the selected engine auto-expands, and swap-off + Bronstein survive a reload; the name fix was
   confirmed end-to-end (a guest who beat the engine then registered shows under the new username).
 - Process: feature branch feature/profile-names-and-sticky-lobby in both submodules, merged to master.
+
+Async managed engines — a slow engine can no longer block the server (todos12.md)
+- Matches were already driven off the request path (an opponent's move fires OnGameChanged, which only
+  schedules the engine on a timer and returns), but the decision itself — EngineDriver.ChooseMove — was
+  synchronous, so a heavyweight engine that actually thinks (deep search, a subprocess, or a service
+  call) would block Bun's single event loop and stall every other game and WebSocket message while it
+  ran. ChooseMove may now return a Promise (its type became Awaitable<EngineChoice | null>); the trivial
+  built-in engines stay synchronous and unchanged, since a plain value satisfies Awaitable.
+- EngineSession.Act now awaits the choice and, crucially, re-validates the position afterwards: it
+  snapshots the ply via the new GameInstance.CurrentMoveCount() before thinking, and after the (possibly
+  async) think drops the result unless the game is still active, still the engine's turn, and at the very
+  same ply. So a move an engine decides on while the game finishes, is abandoned, or moves on underneath
+  it is never applied to a stale board. The orchestrator clears its per-game Pending guard before acting
+  (so two managed engines keep chaining moves) and wraps Act in try/catch — a managed engine's think is
+  arbitrary user code and must never take the server down or wedge a game.
+- Tests: a gated async driver (its think parked on a hand-released Promise) proves the engine is driven
+  without blocking and its move lands once released, and that a move it decides on after the human
+  resigns mid-think is dropped with the board left untouched (76 pass, 0 fail).
+- Process: feature branch feature/async-managed-engines in the Backend submodule, merged to master.
