@@ -601,3 +601,33 @@ Admin — in-browser key signing (optional, secure)
   SSHSIG is accepted by `ssh-keygen -Y verify`, and that the real browser file-picker path logs in
   against a trusted key end-to-end.
 - Process: feature branch feature/admin-sidebar-sticky-sessions in both submodules, merged to master.
+
+
+Hex — Iteration 12 summary (todos11.md): zero-base Delay clocks, a timeout-strand fix, and a
+board-picker centring fix.
+
+Clock — Delay clocks may now start from a zero base
+- Capping every mode's base at 1s was needlessly strict for Delay, where the per-move delay alone can
+  carry each turn. ValidateClock now allows BaseMs down to 0 *for Delay only* (Fischer/Bronstein still
+  require the full BaseMsMin), and additionally rejects a Delay clock whose BaseMs + DelayMs is not
+  positive — so a 0+10s "pure delay" clock is valid but 0+0 is not. This covers both the admin panel
+  (presets are JSON validated through the same ValidateSettings → ValidateClock path) and the match
+  creation page (ClockEditor's Base field drops its minimum to 0 when Delay is selected).
+
+Clock — timing out a low-base Delay game no longer strands it
+- A 1s+1s Delay game could time out into a stuck state with no win/loss. Cause: GameClock.TimeUntilFlagMs
+  returned only the remaining *main* clock, ignoring the unspent per-turn delay, so the timeout was
+  scheduled a full delay-length too early; when the timer fired, TimedOutColor saw the player had not
+  actually flagged, resolved nothing, and — crucially — nothing rescheduled, leaving the game hanging.
+  Fix: TimeUntilFlagMs now adds the active delay (RemainingFor + ActiveDelayMs), so the deadline is the
+  true flag time in every mode (unchanged for Fischer/Bronstein, where the delay term is 0). As a belt-
+  and-braces guard against any early wake-up, GameManager.FireTimeout now re-arms the timer whenever it
+  fires without resolving a deadline, so a still-active game can never be left without a pending timeout.
+
+Graphics — small board-size pickers centre instead of hugging an edge
+- When the admin narrows the allowed board range to just a few sizes, the board-size Segmented (a
+  width:100% scrollable flex row) left its buttons hard against one edge. Added `justify-content: safe
+  center` to `.Segmented.Scroll`: the few-option case centres, and `safe` falls back to start alignment
+  when the options overflow so the first ones are never clipped or unreachable.
+
+- Process: feature branch feature/delay-zero-base-and-timeout-fix in both submodules, merged to master.
