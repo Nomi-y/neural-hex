@@ -503,3 +503,46 @@ Logout glitch
   OnSession a moment later. The new queue UI follows the same rule (render from authoritative
   server state) so it can't reproduce the bug.
 - Process: done on feature branch feature/clock-and-queue in both submodules, merged to master.
+
+
+Hex — Iteration 10 summary (todos9.md — data persistence, live stats, admin tabs)
+=================================================================================
+Backend-focused: move source-of-truth data into the DB, add live nav-bar metrics with an
+admin-tunable refresh, make the board-size range admin-editable, reorganise the admin panel into
+tabs, and fix a clock-selector layout bug. Backend typechecks; 65 tests pass (+4); both projects
+build; verified live against the compose stack (HTTP endpoints, admin save + restart persistence,
+and headless screenshots of the admin tabs, nav counters, board picker and clock editor). The
+stack was left running per the brief.
+
+Data lives in the DB
+- PresetService now seeds the built-in queue presets into the Settings store on first boot, so the
+  database is the single source of truth — the served list always comes from the store/cache, never
+  a hardcoded array. (The in-code defaults remain only as the one-time seed.)
+- All admin settings except the cosmetic colour theme survive a restart: AbandonTimeoutMs, the new
+  StatsRefreshMs, and the new board-size Min/Max are persisted key/values in SettingsService.
+
+Live counters (players online / matches in progress)
+- New public GET /Api/Stats → { PlayersOnline, LiveMatches, RefreshMs }. PlayersOnline counts
+  connected humans (ConnectionRegistry.ConnectedIds minus engines); LiveMatches is
+  GameManager.CountActiveGames(). The nav bar shows both with quiet colour-coded dots and polls on
+  the server-provided RefreshMs (the poll reschedules itself from each response), so the admin
+  controls the cadence centrally.
+- RefreshMs is admin-editable (StatsRefresh range 1–60s) and persisted.
+
+Board-size limits
+- The allowed board range is admin-editable (Min/Max, clamped to absolute Hard bounds 3–25 and kept
+  ordered) and persisted. ValidateSettings takes the live limits so custom games are enforced
+  without a restart; /Api/Limits serves the live range and the lobby board picker reads it (instead
+  of the static client constant).
+
+Admin panel
+- Split from one long scroll into a tab navbar: Server (match/abandon, live-counter refresh, board
+  size) · Presets · Engines · Users · Theme · Security. Added client-side search filters over the
+  users and engines tables. Styling stays deliberately utilitarian.
+
+Clock-selector layout bug
+- The clock mode pills (Fischer/Bronstein/Delay/Unlimited) resized whenever the format changed: the
+  flex column stretched the inline-flex control to the editor's width, which the variable-length
+  explanation text drove. align-items:flex-start keeps the pills at their own constant width and the
+  blurb wraps at a fixed max-width. Verified the row is a steady 370px across all four modes.
+- Process: feature branch feature/admin-data-and-stats in both submodules, merged to master.
