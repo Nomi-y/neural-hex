@@ -919,3 +919,42 @@ Notifications trimmed (Frontend-only)
 - Cleanup: Notify is no longer used in Lobby (import + hook call removed) or GameScreen (dropped
   from the useFeedback destructure); App still uses it for errors and connection changes.
 - Process: feature branch feature/quieter-notifications in the Frontend submodule, merged to master.
+
+
+Hex — Iteration 19 summary (Backend, todos16.md): keep engine forfeits in history, fix
+external-engine push scaling, and document managed-engine async. (Frontend work this
+iteration is tracked separately by a parallel agent.)
+
+Engine forfeits are kept in match history (Backend)
+- Why: engines may resign (and matches may also time out / be abandoned), but the server used to
+  ERASE any engine match that ended by resign/abandon/timeout — deleting it from memory and
+  storage so it vanished entirely. Discovered while testing when an engine resigned and the whole
+  match disappeared.
+- Change: removed MaybeEraseEngineForfeit / IsEngineMatch from SessionService; HandleGameChanged
+  no longer erases. An engine match that ends by resign/abandon/timeout is now retained exactly
+  like any other finished game and appears in both players' match history. (GameManager.EraseGame
+  and Store.DeleteMatch remain as a generic, tested primitive — just no longer invoked here.)
+- Test: Integration.test.ts — challenging the built-in engine then resigning leaves a recorded
+  match (OpponentKind "Engine", WinReason "Resign") in GetMatchHistory.
+
+External-engine network performance: push only the changed game (Backend)
+- Problem: for an external engine, every game change pushed a full EngineState snapshot of ALL of
+  that engine's active games (each a full GameView with the whole board). An engine in N concurrent
+  matches therefore received N game views on every single move — O(N) bandwidth/serialization per
+  move, quadratic over a tournament.
+- Fix: HandleGameChanged now sends an external engine ONLY the game that changed (new PushGameChange
+  / EngineGameView helpers in SessionService). The full multi-game snapshot is reserved for the
+  connect/reconnect push (PushParticipant), so a (re)connecting engine still learns every game and
+  can resume missed turns. Safe because a game only becomes the engine's turn when it changes, so the
+  changed game is always the one it must act on.
+- Verified: new ./ExternalEngines/ holds a reference external engine (Engine.ts) and PerfCheck.ts,
+  which drives N concurrent matches against the live stack and asserts the push size. Result over 10
+  concurrent matches: avg 1.00 GameViews/push, max 1 (was up to N). PASS.
+- Docs: Backend/Engines.md external-engine protocol section now documents the per-change-vs-connect
+  push semantics and the rationale; AdminPage's "How to connect" note updated to match.
+
+Managed engines are async — documented (Backend)
+- ChooseMove may return a Promise and is awaited without blocking the event loop (EngineSession.Act
+  snapshots the ply and discards a stale result if the position advanced mid-thought). The code
+  already did this; Backend/Engines.md still claimed ChooseMove was synchronous. Updated the
+  interface snippet (Awaitable<EngineChoice | null>), the comparison table, and the gotchas note.
