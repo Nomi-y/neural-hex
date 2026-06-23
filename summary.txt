@@ -1006,3 +1006,72 @@ Engine selector (EnginePicker)
   per-engine "View profile" inside each expanded row; it was just hidden by the squish.)
 - Verified the whole pass against the running stack in a browser: edges, ∞, screenshot numbers,
   engine button/description/profile, dialog scroll-to-selected, and correct modal stacking.
+
+================================================================================
+
+Hex — Iteration 20 summary (engine.md): engine analysis pipeline + two real
+external engines. engine-analysis.md (authored earlier as a feasibility study)
+scoped how an engine could judge a move "good/bad" — a win-probability delta
+between the played move and the engine's best — but nothing was wired up. This
+iteration implements that whole pipeline plus the engines to drive it. WHY: the
+replay viewer was deliberately built leaving room for analysis; the engine
+abstraction was the right shape (EngineView position wrapper, async non-blocking
+driving, external-socket transport, Drizzle store, one-fetch client replay) and
+just needed an analysis capability added, not a rework.
+
+Shared evaluator (Backend/Source/Engines/Evaluation.ts)
+- No neural net, no training: the classic shortest-connection-distance heuristic.
+  For a colour, the cheapest way to join its two edges costs one move per EMPTY
+  cell the path still needs (own stones free, opponent stones are walls); computed
+  with a 0-1 BFS. Red joins top<->bottom, Blue left<->right. EvaluatePosition maps
+  the distance gap (with a half-move tempo for the side to move) through a logistic
+  squash to a win probability. RankMoves does a one-ply search (play each empty
+  cell, evaluate from the opponent's seat, flip) and returns the best moves, with a
+  faint centre bias only to break ties. AnalyzeMatch reconstructs the board ply by
+  ply (mirrors the client's BuildReplayView: a swap exchanges seats, placements
+  carry their owner's colour) and emits one PositionAnalysis per position.
+
+Engine contract + managed Heuristic engine
+- EngineDriver gained an optional AnalyzeMatch(Moves, BoardSize, SwapRule) ->
+  PositionAnalysis[]. Presence alone marks an engine analysis-capable (synced to a
+  new SupportsAnalysis flag on the participant at boot). New managed engine
+  Heuristic.ts both PLAYS (best shortest-path move; steals a strong opening when a
+  swap beats its best reply) and ANALYSES (reuses Evaluation) — so analysis works
+  out of the box with nothing self-hosted, and it doubles as a stronger built-in
+  opponent than FirstFree/Random.
+
+AnalysisService + persistence + HTTP
+- AnalysisService picks a provider (explicit id, else a connected external analysis
+  engine, else the managed Heuristic), serves a cache hit, or computes: managed via
+  the driver, external by sending AnalyzeRequest over the engine socket and awaiting
+  the matching AnalysisResult (RequestId-correlated, 30s timeout). Results persist
+  in a new MatchAnalyses table keyed by (GameId, ProviderId) so compute is paid
+  once. New protocol messages AnalyzeRequest (server->engine) / AnalysisResult
+  (engine->server), parsed and routed in MessageParser/SessionService. Endpoints:
+  GET /Api/Matches/:id/Analysis (cache-only, lists providers) and POST (compute +
+  persist; 404 unknown/active, 503 no provider). Admin external-engine registration
+  (page + API) gained a SupportsAnalysis toggle. Drizzle migration 0005 adds the
+  table and the Participants.SupportsAnalysis column.
+
+Frontend overlay (MatchReplay.tsx, HexBoard.tsx) — lazy, one extra fetch
+- An "Analyse" button (shown when a provider exists) GETs any cached analysis up
+  front and POSTs to compute on demand. Three new, purely client-side renderings of
+  the cached PositionAnalysis: an eval graph (Red win-probability across plies, with
+  a clickable cursor that jumps), per-move quality badges in the timeline
+  (?!/?/?? from the win-probability the mover gave up), and the engine's suggested
+  move ringed on the board while paused. The replay stays client-side after the one
+  analysis fetch, matching the rest of the viewer.
+
+Two real external engines (ExternalEngines/, repurposed)
+- Hex.ts: standalone copy of the evaluator (external engines must not import the
+  backend). PlayEngine.ts replaces the old first-free reference Engine.ts — a
+  genuine opponent that plays by Hex.ts and swaps sensibly. AnalysisEngine.ts
+  answers AnalyzeRequest with AnalysisResult, registered with SupportsAnalysis. The
+  managed Heuristic is the always-available default; these externals are the
+  pluggable, crash-isolated alternative behind the same interface (and where a
+  stronger evaluator would later live). README rewritten; PerfCheck.ts kept.
+
+Tests: Tests/Analysis.test.ts covers ConnectionDistance, EvaluatePosition, RankMoves
+and AnalyzeMatch shape, plus the AnalysisService compute-then-cache path and the
+GET(cache-only)/POST(compute) HTTP endpoints. Full suite 92 pass / 0 fail; both
+submodules typecheck clean.
