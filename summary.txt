@@ -877,3 +877,26 @@ Replay clock — simulated, ticking, shared with the live game
   down (1:00 → 0:59) and snaps to its recorded 0:58 on the move, the other side then ticks and settles
   to 0:57; stepping back to a paused ply shows the exact recorded values with no drift.
 - Process: feature branch feature/replay-clock in the Frontend submodule, merged to master.
+
+
+Hex — Iteration 17 summary (todos14.md): board accessibility — the SVG board is now in the
+accessibility tree and fully playable from the keyboard, closing the one a11y gap found in manual
+two-player testing.
+
+Board accessibility (Frontend-only)
+- The board renders as role="grid" with one role="row" group per board row and a role="gridcell"
+  polygon per cell, so its structure is navigable by assistive tech. Each cell carries an
+  aria-label of its Hex coordinate plus state — e.g. "e5, empty" / "e5, Red" / "e5, Blue". The
+  coordinate string (column letter + 1-based row) was factored out into BoardGeometry.Coordinate and
+  is now shared by the move list (GameScreen.DescribeMove) and the cell labels — one source of truth.
+- Keyboard play: a roving tabindex puts a single tab stop on the board (defaulting to the next empty
+  cell), arrow keys walk the grid along its row/column axes (clamped to the edges), and Enter/Space
+  plays the focused cell when it's the player's turn and the cell is empty. Mouse/right-click planning
+  is untouched. The tab stop resets into range when a different (possibly differently-sized) game
+  loads. The same labelled grid + roving focus also applies in the read-only replay viewer.
+- Visible focus: a keyboard-focused cell draws a bright Primary-coloured ring on the hex itself
+  (SVG outline is unreliable), independent of hover/colour.
+- Turn and result announcements: the match status line (your move / opponent's move / win-loss
+  result) is now an aria-live="polite" role="status" region, so turn changes and the final result are
+  announced as they update.
+- Process: feature branch feature/board-a11y in the Frontend submodule, merged to master.
