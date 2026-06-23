@@ -6,3 +6,7 @@
 # docker-compose.yml (ADMIN_PUBLIC_KEYS), so neither file needs to be tracked.
 hex-admin
 hex-admin.pub
+
+# Local verification artifacts — browser screenshots and the MCP scratch dir.
+.playwright-mcp/
+/*.png
