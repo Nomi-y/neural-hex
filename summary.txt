@@ -958,3 +958,51 @@ Managed engines are async — documented (Backend)
   snapshots the ply and discards a stale result if the position advanced mid-thought). The code
   already did this; Backend/Engines.md still claimed ChooseMove was synchronous. Updated the
   interface snippet (Awaitable<EngineChoice | null>), the comparison table, and the gotchas note.
+
+Hex — Iteration 19 summary (Frontend, todos15.md): UI touchups — a pass over visual nitpicks
+across the match screen, replay viewer, board and engine selector. (Backend work this iteration is
+the block above, by a parallel agent.)
+
+Move list / replay text
+- The swapped-seat entry in both the live move list and the replay timeline now reads plain "swap"
+  (dropped the leading ↔ glyph, which the new board swap mark already conveys). Shared in spirit
+  across GameScreen.DescribeMove and MatchReplay.DescribeMove.
+
+Clocks (PlayerCard)
+- Unlimited (∞): the infinity sign was rendered in the monospace clock font, where the glyph is
+  squeezed into a narrow cell and reads as a squished blob. It now renders in the body font at a
+  slightly larger size (.ClockInfinite), so it looks like a proper ∞.
+- Delay pip (+Ns): the delay badge shown while Delay mode holds the main clock still was mis-sized
+  and mis-aligned against the tabular clock digits. It is now a small accent badge in the clock's
+  mono/tabular font, vertically centred against the digits (ClockTime switched baseline→center).
+
+Replay viewer
+- Status line: dropped the redundant "{size}×{size}" board-size text (clock format was never there)
+  — match metadata duplicates the lobby/history and adds noise. Only "move X/Y" remains, now on its
+  own line below the result (.ReplayMoveCount) instead of trailing the result text inline.
+- Screenshot-view move numbers: re-styled to match the rest of the site — mono, tabular figures
+  (like the clocks/stepper), lighter weight, and a softer legibility halo on the coloured stones.
+
+Board (HexBoard + BoardGeometry)
+- Swap mark: was a white ⇄ text glyph with a dark outline that didn't sit centred. Replaced with a
+  geometrically-drawn two-arrow icon (SwapMark) built symmetrically around the stone centre, so it
+  is exactly centred at any board size; drawn in the accent colour with no outline.
+- Edge geometry (the rims): previously dozens of per-cell, per-edge <line> segments with an inset
+  and round caps, which overlapped/bulged along each side. Rebuilt as FOUR continuous polylines —
+  one per side (BuildBorders): the corners shared by adjacent boundary hex-edges are stitched into a
+  single points list, so each side is one unbroken zigzag with no self-overlap, and the four lines
+  meet cleanly at the board corners (the two acute corners belong to Red). Verified at 9×9 and 10×10.
+
+Engine selector (EnginePicker)
+- Matchmaking control: the selector button now has a fixed shape (min-height; name left-aligned and
+  truncating, board-size hint right-aligned) with the engine description shown below it. The "View
+  profile" action became a compact icon button fused onto the button's right edge (shared border,
+  only the outer corners rounded) for visual clarity.
+- Selector dialog: the list now scrolls inside a height-capped card (flex column; list grows and
+  scrolls, header/footer fixed) instead of squishing once several engines exist, and on open it
+  scrolls the currently-selected engine into view. The dialog is portaled to <body> so the lobby's
+  RiseIn transform (a stacking context) can't trap the overlay beneath the sticky header — the same
+  escape the screenshot view already uses. (The profile button the report couldn't find is the
+  per-engine "View profile" inside each expanded row; it was just hidden by the squish.)
+- Verified the whole pass against the running stack in a browser: edges, ∞, screenshot numbers,
+  engine button/description/profile, dialog scroll-to-selected, and correct modal stacking.
