@@ -102,13 +102,19 @@ def main() -> None:
             generation += 1
             gen_start = time.time()
 
+            print(f"[gen {generation}] self-play: {cfg.train.games_per_generation} games "
+                  f"@ {cfg.mcts.simulations} sims on {cfg.resolve_actors()} actor(s)…", flush=True)
             samples = selfplay.generate(cfg, best_state, cfg.train.games_per_generation, base_seed=cfg.train.seed + generation * 1000)
             buffer.extend(samples)
+            print(f"[gen {generation}] self-play done in {time.time()-gen_start:.0f}s "
+                  f"({len(samples)} samples, buffer {len(buffer)})", flush=True)
             if len(buffer) < cfg.train.batch_size:
                 print(f"[gen {generation}] buffer warming ({len(buffer)} samples)", flush=True)
                 continue
 
+            print(f"[gen {generation}] training {cfg.train.train_steps_per_generation} steps…", flush=True)
             policy_loss, value_loss = _train_steps(net, optimizer, buffer, cfg, rng, device)
+            print(f"[gen {generation}] arena: {cfg.train.arena_games} games vs current best…", flush=True)
 
             cand_net = build_net(cfg).to(device)
             cand_net.load_state_dict(net.state_dict())
