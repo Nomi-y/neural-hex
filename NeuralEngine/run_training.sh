@@ -44,18 +44,22 @@ Choose a training preset. Time/iteration figures are rough and scale with the VP
   [4] Strong             96x8 net, 200 sims, 256 games/gen, 24h, DEVICE=cpu
                          → for a big CPU box left running long; stronger ceiling, slow per gen.
 
-  CUDA GPU VPS ────────────────────────────────────────────────────────────────
-  [5] Balanced (96x8)    200 sims, 64 parallel, 256 games/gen, 6h, DEVICE=cuda   [resume-compatible]
+  CUDA GPU VPS — self-play & arena fan out across ALL cores onto the shared GPU ─
+  [5] Balanced (96x8)    200 sims, 64 parallel, 512 games/gen, 6h, DEVICE=cuda   [resume-compatible]
                          → tens of gens on a typical cloud GPU. Matches the default net, so it RESUMES
                            existing checkpoints/.
-  [6] Large              128x10 net, 300 sims, 128 parallel, 512 games/gen, 12h, DEVICE=cuda
+  [6] Large              128x10 net, 300 sims, 128 parallel, 1024 games/gen, 12h, DEVICE=cuda
                          → higher ceiling for a bigger/faster GPU; the larger net CANNOT resume a 96x8
                            checkpoint — it starts fresh.
+  [7] Moon (saturate)    160x16 net, 400 sims, 256 parallel, 8192 games/gen, 10h, DEVICE=cuda
+                         → for a top-end card (A100/H100/RTX PRO 6000). Big net + thousands of games so
+                           every core feeds the GPU. Watch `nvidia-smi`; enable CUDA MPS for max util
+                           (see README). Fresh start (large net).
 MENU
 
 choice="${1:-}"
 if [ -z "$choice" ]; then
-  read -rp "Preset number [1-6]: " choice
+  read -rp "Preset number [1-7]: " choice
 fi
 
 case "$choice" in
@@ -95,7 +99,7 @@ case "$choice" in
       export DEVICE="${DEVICE:-cuda}"
       export NET_CHANNELS="${NET_CHANNELS:-96}";  export NET_BLOCKS="${NET_BLOCKS:-8}"
       export MCTS_SIMS="${MCTS_SIMS:-200}";       export PARALLEL_GAMES="${PARALLEL_GAMES:-64}"
-      export GAMES_PER_GEN="${GAMES_PER_GEN:-256}"; export TRAIN_STEPS="${TRAIN_STEPS:-400}"
+      export GAMES_PER_GEN="${GAMES_PER_GEN:-512}"; export TRAIN_STEPS="${TRAIN_STEPS:-400}"
       export BATCH_SIZE="${BATCH_SIZE:-512}";     export ARENA_GAMES="${ARENA_GAMES:-40}"
       export ARENA_SIMS="${ARENA_SIMS:-120}";     export TRAIN_HOURS="${TRAIN_HOURS:-6}"
       label="5: CUDA VPS — balanced 96x8 (resume-compatible)" ;;
@@ -103,11 +107,19 @@ case "$choice" in
       export DEVICE="${DEVICE:-cuda}"
       export NET_CHANNELS="${NET_CHANNELS:-128}"; export NET_BLOCKS="${NET_BLOCKS:-10}"
       export MCTS_SIMS="${MCTS_SIMS:-300}";       export PARALLEL_GAMES="${PARALLEL_GAMES:-128}"
-      export GAMES_PER_GEN="${GAMES_PER_GEN:-512}"; export TRAIN_STEPS="${TRAIN_STEPS:-600}"
+      export GAMES_PER_GEN="${GAMES_PER_GEN:-1024}"; export TRAIN_STEPS="${TRAIN_STEPS:-600}"
       export BATCH_SIZE="${BATCH_SIZE:-768}";     export ARENA_GAMES="${ARENA_GAMES:-48}"
       export ARENA_SIMS="${ARENA_SIMS:-160}";     export TRAIN_HOURS="${TRAIN_HOURS:-12}"
       label="6: CUDA VPS — large net (128x10)" ;;
-  *)  echo "Invalid choice: '$choice' (expected 1-6)." >&2; exit 1 ;;
+  7)  # CUDA VPS — saturate a top-end card: big net + thousands of games so every core feeds the GPU
+      export DEVICE="${DEVICE:-cuda}"
+      export NET_CHANNELS="${NET_CHANNELS:-160}"; export NET_BLOCKS="${NET_BLOCKS:-16}"
+      export MCTS_SIMS="${MCTS_SIMS:-400}";       export PARALLEL_GAMES="${PARALLEL_GAMES:-256}"
+      export GAMES_PER_GEN="${GAMES_PER_GEN:-8192}"; export TRAIN_STEPS="${TRAIN_STEPS:-1000}"
+      export BATCH_SIZE="${BATCH_SIZE:-4096}";    export ARENA_GAMES="${ARENA_GAMES:-128}"
+      export ARENA_SIMS="${ARENA_SIMS:-200}";     export TRAIN_HOURS="${TRAIN_HOURS:-10}"
+      label="7: CUDA VPS — MOON, saturate a top-end card (160x16)" ;;
+  *)  echo "Invalid choice: '$choice' (expected 1-7)." >&2; exit 1 ;;
 esac
 
 echo

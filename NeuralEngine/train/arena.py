@@ -4,10 +4,15 @@ This is the "reward-based evolution" gate — a new network only becomes the sel
 actually beats the incumbent over a set of games (alternating colours for fairness), played greedily
 with a modest search. Both networks evaluate in batches across the games that are currently on their
 turn.
+
+Like self-play, the match fans out across many worker processes (each holding its own copy of both
+nets on the shared GPU, or single-threaded on CPU) so a fast card / many cores stay saturated rather
+than bottlenecked on one Python actor. MPS runs in-process.
 """
 
 from __future__ import annotations
 
+import multiprocessing as mp
 from typing import Callable, List, Optional
 
 import numpy as np
@@ -16,6 +21,7 @@ from config import Config
 from hex.board import HexState, RED, BLUE
 from net.evaluator import Evaluator
 from search import mcts
+from train.selfplay import build_eval_net, to_numpy_state, chunk_sizes
 
 
 class _Game:
@@ -28,15 +34,16 @@ class _Game:
         self.winner = 0
 
 
-def play_match(cfg: Config, candidate: Evaluator, best: Evaluator, num_games: int, simulations: int,
-               rng: np.random.Generator, progress: Optional[Callable[[int, int], None]] = None) -> float:
-    """Return the candidate's win rate over `num_games` (it plays RED in half, BLUE in the other half).
-
-    `progress(done, total)` (optional) is called as games finish so a caller can log arena progress.
-    """
+def _run_games(cfg: Config, candidate: Evaluator, best: Evaluator, num_games: int, simulations: int,
+               rng: np.random.Generator, color_offset: int = 0,
+               progress: Optional[Callable[[int, int], None]] = None) -> int:
+    """Play `num_games` and return how many the candidate won. `color_offset` keeps the global RED/BLUE
+    alternation consistent when games are split into chunks (chunk starting at global index s passes
+    color_offset=s), so exactly half the whole match has the candidate as RED."""
     num_actions = cfg.game.num_actions
     games = [
-        _Game(HexState.initial(cfg.game.board_size, cfg.game.swap_rule), RED if i % 2 == 0 else BLUE)
+        _Game(HexState.initial(cfg.game.board_size, cfg.game.swap_rule),
+              RED if (color_offset + i) % 2 == 0 else BLUE)
         for i in range(num_games)
     ]
 
@@ -65,5 +72,60 @@ def play_match(cfg: Config, candidate: Evaluator, best: Evaluator, num_games: in
             finished = newly_done
             progress(finished, num_games)
 
-    wins = sum(1 for g in games if g.winner == g.candidate_color)
-    return wins / num_games
+    return sum(1 for g in games if g.winner == g.candidate_color)
+
+
+def play_match(cfg: Config, candidate: Evaluator, best: Evaluator, num_games: int, simulations: int,
+               rng: np.random.Generator, progress: Optional[Callable[[int, int], None]] = None) -> float:
+    """In-process match (used by the smoke test). Returns the candidate's win rate."""
+    return _run_games(cfg, candidate, best, num_games, simulations, rng, 0, progress) / num_games
+
+
+# ---- process-level parallelism (mirrors selfplay) ----
+
+_ARENA: dict = {}
+
+
+def _init_arena_worker(cfg: Config, cand_np, best_np) -> None:
+    _ARENA["cfg"] = cfg
+    _ARENA["candidate"] = build_eval_net(cfg, cand_np)
+    _ARENA["best"] = build_eval_net(cfg, best_np)
+
+
+def _play_arena_chunk(args):
+    num_games, color_offset, simulations, seed = args
+    rng = np.random.default_rng(seed)
+    wins = _run_games(_ARENA["cfg"], _ARENA["candidate"], _ARENA["best"], num_games, simulations, rng,
+                      color_offset)
+    return num_games, wins
+
+
+def play_match_parallel(cfg: Config, cand_state, best_state, num_games: int, simulations: int,
+                        base_seed: int, progress: Optional[Callable[[int, int], None]] = None) -> float:
+    """Fan the gating match out across worker processes; return the candidate's win rate. Weights are
+    passed as torch state dicts (converted to numpy for transfer; workers rebuild on cfg.device)."""
+    actors = cfg.resolve_actors()
+    cand_np = to_numpy_state(cand_state)
+    best_np = to_numpy_state(best_state)
+
+    if cfg.device == "mps" or actors <= 1:
+        candidate = build_eval_net(cfg, cand_np)
+        best = build_eval_net(cfg, best_np)
+        rng = np.random.default_rng(base_seed)
+        return _run_games(cfg, candidate, best, num_games, simulations, rng, 0, progress) / num_games
+
+    sizes = chunk_sizes(cfg, num_games, actors)
+    # color_offset = games preceding this chunk, so the RED/BLUE alternation is global, not per-chunk.
+    offsets = np.cumsum([0] + sizes[:-1]).tolist()
+    tasks = [(size, int(off), simulations, base_seed + i)
+             for i, (size, off) in enumerate(zip(sizes, offsets))]
+    ctx = mp.get_context("spawn")
+    total_wins = 0
+    done = 0
+    with ctx.Pool(processes=actors, initializer=_init_arena_worker, initargs=(cfg, cand_np, best_np)) as pool:
+        for n, wins in pool.imap_unordered(_play_arena_chunk, tasks):
+            total_wins += wins
+            done += n
+            if progress:
+                progress(done, num_games)
+    return total_wins / num_games

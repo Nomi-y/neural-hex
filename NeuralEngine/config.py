@@ -147,11 +147,16 @@ class Config:
     device: str = field(default_factory=_detect_device)
 
     def resolve_actors(self) -> int:
-        """How many self-play processes to launch. Auto: 1 on GPU/MPS (one big batched actor saturates
-        it), else (cores - 1) on CPU so every core does self-play while one stays free for training."""
+        """How many self-play/arena worker processes to launch.
+
+        On CUDA we deliberately run MANY processes (≈ one per core), each batching its own games and
+        holding its own copy of the (small) net on the shared GPU — their NN batches interleave on the
+        card (truly concurrently under CUDA MPS), so the GPU stays fed while every core does Python tree
+        work in parallel. A single process can't saturate a fast GPU because MCTS is GIL-bound. MPS
+        (Apple) doesn't multi-process cleanly, so it stays single-actor. Override with NUM_ACTORS."""
         if self.train.num_actors > 0:
             return self.train.num_actors
-        if self.device in ("cuda", "mps"):
+        if self.device == "mps":
             return 1
         return max(1, mp.cpu_count() - 1)
 

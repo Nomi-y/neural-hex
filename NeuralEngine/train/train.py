@@ -26,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import load, Config
 from net.model import build_net
-from net.evaluator import Evaluator
 from train.replay_buffer import ReplayBuffer
 from train import selfplay, arena
 from train.clock import log, set_start, offset_str
@@ -156,17 +155,12 @@ def main() -> None:
                 f"(ploss={policy_loss:.3f} vloss={value_loss:.3f})")
 
             log(f"[gen {generation}] arena: {cfg.train.arena_games} games "
-                f"@ {cfg.train.arena_simulations} sims vs current best…")
+                f"@ {cfg.train.arena_simulations} sims on {cfg.resolve_actors()} actor(s) vs current best…")
             ar_start = time.time()
-            cand_net = build_net(cfg).to(device)
-            cand_net.load_state_dict(net.state_dict())
-            cand_net.eval()
-            best_net = build_net(cfg).to(device)
-            best_net.load_state_dict(best_state)
-            best_net.eval()
-            win_rate = arena.play_match(
-                cfg, Evaluator(cand_net, device), Evaluator(best_net, device),
-                cfg.train.arena_games, cfg.train.arena_simulations, rng,
+            win_rate = arena.play_match_parallel(
+                cfg, net.state_dict(), best_state,
+                cfg.train.arena_games, cfg.train.arena_simulations,
+                base_seed=cfg.train.seed + generation * 1000 + 500,
                 progress=_throttled("arena", cfg.train.arena_games),
             )
             log(f"[gen {generation}] arena done in {time.time() - ar_start:.0f}s "

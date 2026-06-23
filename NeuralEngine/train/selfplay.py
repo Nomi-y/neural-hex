@@ -95,18 +95,30 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
 _WORKER: dict = {}
 
 
-def _init_worker(cfg: Config, np_state) -> None:
+def build_eval_net(cfg: Config, np_state) -> Evaluator:
+    """Rebuild a net on cfg.device from numpy weights and wrap it in an Evaluator.
+
+    Weights arrive as numpy (not torch tensors) so the inter-process transfer avoids torch's
+    shared-memory tensor reducer, which would hold an FD per tensor per worker in the parent and
+    exhaust the open-file limit (EMFILE) once many workers run.
+    """
     import torch
 
-    torch.set_num_threads(1)  # each worker is single-threaded; parallelism comes from many workers
-    net = build_net(cfg)
-    # Weights arrive as numpy: rebuild the tensor state dict here. Sending plain arrays avoids torch's
-    # shared-memory tensor reducer, which would hold an FD per tensor per worker in the parent and
-    # exhaust the open-file limit (EMFILE) once many workers run.
-    net.load_state_dict({k: torch.from_numpy(v) for k, v in np_state.items()})
+    if cfg.device == "cpu":
+        torch.set_num_threads(1)  # each CPU worker is single-threaded; parallelism is across workers
+    net = build_net(cfg).to(cfg.device)
+    net.load_state_dict({k: torch.from_numpy(v).to(cfg.device) for k, v in np_state.items()})
     net.eval()
+    return Evaluator(net, cfg.device)
+
+
+def to_numpy_state(state_dict) -> dict:
+    return {k: v.detach().cpu().numpy() for k, v in state_dict.items()}
+
+
+def _init_worker(cfg: Config, np_state) -> None:
     _WORKER["cfg"] = cfg
-    _WORKER["evaluator"] = Evaluator(net, "cpu")
+    _WORKER["evaluator"] = build_eval_net(cfg, np_state)
 
 
 def _play_chunk(args) -> Tuple[int, List[Sample]]:
@@ -116,11 +128,26 @@ def _play_chunk(args) -> Tuple[int, List[Sample]]:
     return num_games, samples  # report game count so the parent can track progress in completion order
 
 
-def _split(total: int, parts: int) -> List[int]:
-    """Split `total` games into `parts` near-equal chunk sizes, each >= 1."""
+def split_evenly(total: int, parts: int) -> List[int]:
+    """Split `total` into `parts` near-equal sizes, each >= 1."""
     parts = max(1, min(parts, total))
     base, extra = divmod(total, parts)
     return [base + (1 if i < extra else 0) for i in range(parts)]
+
+
+def chunk_sizes(cfg: Config, num_games: int, actors: int) -> List[int]:
+    """Per-task game counts, tuned per device.
+
+    GPU: enough chunks that (a) every worker gets work (>= actors) and (b) no chunk exceeds
+    parallel_games, the VRAM-bounded batch the card should see per forward. All GPU workers run at ~equal
+    speed, so a near-even split (≈ one chunk each) finishes together — no straggler tail to chase, unlike
+    CPU. CPU: many small chunks so fast cores keep grabbing work instead of idling behind a slow one;
+    batch size is irrelevant there (the net runs one sample at a time on CPU regardless)."""
+    if cfg.device == "cuda":
+        by_batch = (num_games + cfg.selfplay.parallel_games - 1) // max(1, cfg.selfplay.parallel_games)
+        parts = max(actors, by_batch)
+        return split_evenly(num_games, parts)
+    return split_evenly(num_games, actors * 4)
 
 
 ProgressFn = Callable[[int, int], None]
@@ -130,18 +157,19 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
              progress: Optional[ProgressFn] = None) -> List[Sample]:
     """Generate `num_games` self-play games using the given network weights.
 
-    `progress(done, total)` (optional) is called from this process as games complete — per batched
-    chunk on GPU, per finished actor on CPU — so the caller can log incremental progress.
-    """
-    if cfg.device in ("cuda", "mps"):
-        import torch
+    `progress(done, total)` (optional) is called from this process as chunks complete (in completion
+    order), so the caller can log incremental progress.
 
-        net = build_net(cfg).to(cfg.device)
-        net.load_state_dict(state_dict)
-        net.eval()
-        evaluator = Evaluator(net, cfg.device)
+    MPS runs a single in-process actor (multi-process CUDA-style sharing isn't reliable on Apple).
+    Both CUDA and CPU fan out across many worker processes — on CUDA so the GPU stays fed while many
+    cores do tree work in parallel (each worker holds its own copy of the net on the shared card); on
+    CPU so every core generates games. The net is loaded once per worker via the Pool initializer.
+    """
+    actors = cfg.resolve_actors()
+
+    if cfg.device == "mps" or actors <= 1:
+        evaluator = build_eval_net(cfg, to_numpy_state(state_dict))
         rng = np.random.default_rng(base_seed)
-        # One actor, but games_per_generation are batched in chunks of parallel_games for big NN batches.
         out: List[Sample] = []
         remaining = num_games
         done = 0
@@ -154,15 +182,9 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
                 progress(done, num_games)
         return out
 
-    # CPU: fan out across cores. Split into many small chunks (more than there are workers) so the pool
-    # load-balances — fast cores keep grabbing chunks instead of idling while one slow core finishes a
-    # big share, which otherwise leaves a long straggler tail. The net is loaded once per worker (via the
-    # initializer), so smaller chunks don't re-pickle the weights. On CPU the NN runs one sample at a
-    # time regardless of batch, so a smaller chunk costs almost no extra compute.
-    actors = cfg.resolve_actors()
-    np_state = {k: v.detach().cpu().numpy() for k, v in state_dict.items()}
-    chunk_sizes = _split(num_games, actors * 4)
-    tasks = [(size, base_seed + i) for i, size in enumerate(chunk_sizes)]
+    np_state = to_numpy_state(state_dict)
+    sizes = chunk_sizes(cfg, num_games, actors)
+    tasks = [(size, base_seed + i) for i, size in enumerate(sizes)]
     ctx = mp.get_context("spawn")
     results: List[List[Sample]] = []
     done = 0

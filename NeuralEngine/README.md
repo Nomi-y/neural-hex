@@ -102,10 +102,32 @@ overridden from the environment (`TRAIN_HOURS=2 ./run_training.sh 5`):
 | 4 | CPU VPS — strong (all cores) | bigger net for a long run on a many-core box. |
 | 5 | CUDA VPS — balanced **96×8** | matches the default net, so it **resumes** existing checkpoints. |
 | 6 | CUDA VPS — large 128×10 | higher ceiling; the bigger net **can't** resume a 96×8 checkpoint. |
+| 7 | CUDA VPS — **Moon** 160×16 | saturate a top-end card (A100/H100/RTX PRO 6000); big net + 8192 games/gen. |
 
 Presets pin `DEVICE` explicitly (CPU presets always run on CPU even where a GPU exists; CUDA presets
 fail loudly with no GPU rather than crawling on CPU). Changing the **net size** between runs means an
 existing `checkpoints/latest.pt` can't be loaded — it starts fresh, so move `checkpoints/` aside first.
+
+### Saturating the GPU (the whole loop, not just training)
+
+A single Python actor can't feed a fast GPU — MCTS tree work is GIL-bound, so the card sits idle
+waiting on one core. So **self-play *and* arena fan out across many worker processes** (≈ one per CPU
+core, `NUM_ACTORS`), each batching its own games and holding its own copy of the (small) net on the
+**shared** GPU. Their NN batches interleave on the card; the training phase already runs one big
+batched net on the GPU. Net effect: every core does tree work in parallel while the GPU stays fed
+through all three phases.
+
+- **Use the Moon preset (7)** on an A100/H100/RTX PRO 6000: a big net makes each forward substantial,
+  and 8192 games/gen split into `parallel_games`-sized batches across every core keeps the card busy.
+- **Enable CUDA MPS** for true concurrent kernels from the workers (otherwise the GPU time-slices them,
+  which already helps but isn't as tight):
+  ```bash
+  nvidia-cuda-mps-control -d        # start the MPS daemon once, before training
+  ```
+- **Verify it's actually saturated:** `watch -n1 nvidia-smi`. If GPU-Util isn't high, the net is too
+  small for the card (raise `NET_CHANNELS/BLOCKS`) or there aren't enough games in flight (raise
+  `GAMES_PER_GEN` / `PARALLEL_GAMES`). For a small net, a cheaper GPU usually wins on samples-per-dollar
+  — the top-end cards pay off mainly when you scale the **model** up.
 
 It resumes from `checkpoints/latest.pt` if restarted, and the deployable model is always
 `checkpoints/best.pt`. The log is **timestamped** — every line carries the wall-clock time and the
@@ -119,9 +141,9 @@ win-rate, `PROMOTED`/`kept`, per-gen time, and an `elapsed`/`remaining (~N more 
 |---|---|---|
 | `TRAIN_HOURS` | 4 | Wall-clock training budget. |
 | `DEVICE` | auto | `cuda` / `mps` / `cpu`. |
-| `NUM_ACTORS` | auto | Self-play processes (CPU: cores−1; GPU: 1 big batched actor). |
+| `NUM_ACTORS` | auto | Self-play/arena worker processes (CUDA **and** CPU: cores−1; MPS: 1). |
 | `MCTS_SIMS` | 200 | Simulations per self-play move (strength vs speed). |
-| `PARALLEL_GAMES` | 64 | Games batched together per actor (GPU batch size). |
+| `PARALLEL_GAMES` | 64 | Games batched together per worker (per-process GPU batch size). |
 | `GAMES_PER_GEN` | 256 | Self-play games per generation. |
 | `NET_CHANNELS` / `NET_BLOCKS` | 96 / 8 | Network width / depth. |
 | `BATCH_SIZE` / `TRAIN_STEPS` | 512 / 400 | Optimiser batch and steps per generation. |

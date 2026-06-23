@@ -88,6 +88,14 @@ def main() -> None:
     wr = arena.play_match(cfg, Evaluator(net, "cpu"), Evaluator(net, "cpu"), num_games=2, simulations=8, rng=rng)
     print(f"  arena win rate (self vs self): {wr:.0%}")
 
+    # Parallel plumbing: exercise the multi-process self-play + arena path (spawn workers, per-worker
+    # net rebuild, chunking, progress) on CPU, so the same code that fans out onto a GPU is validated.
+    cfg.train.num_actors = 2
+    par_samples = selfplay.generate(cfg, net.state_dict(), num_games=4, base_seed=1)
+    assert par_samples, "parallel self-play produced no samples"
+    wr2 = arena.play_match_parallel(cfg, net.state_dict(), net.state_dict(), num_games=4, simulations=8, base_seed=2)
+    print(f"  parallel: {len(par_samples)} self-play samples, arena win rate {wr2:.0%}")
+
     print(f"  solver on a near-terminal position returned value={val} action={action}")
     print("SMOKE TEST PASSED")
 
