@@ -900,3 +900,22 @@ Board accessibility (Frontend-only)
   result) is now an aria-live="polite" role="status" region, so turn changes and the final result are
   announced as they update.
 - Process: feature branch feature/board-a11y in the Frontend submodule, merged to master.
+
+
+Hex — Iteration 18 summary: quieter notifications — stop toasting events the UI already makes
+obvious, so the toast stack is reserved for things the user could otherwise miss.
+
+Notifications trimmed (Frontend-only)
+- Principle: a toast now fires only when there is no other clear signal — errors, connection
+  state (reconnect / connection lost), and clipboard copies (copying has no visible result of its
+  own). Every deliberate action whose outcome the UI already shows is silent.
+- Removed: "Challenging the engine…" and "Joining game…" (a match loading is self-evident — the
+  screen changes); "Invite link created…" (the Inviting screen already appears with the link and a
+  "Waiting for your friend…" heading, plus the auto-copy toast); "Logged in" / "Welcome, X" /
+  "Logged out" (the screen and header identity change); "You resigned." (a confirm modal precedes
+  it and the result banner states the loss); "You took the opening (swap)." (the board and turn
+  flip). Kept: all error toasts, Reconnected / Connection lost (the online ticker is small and the
+  event matters), and the clipboard copy confirmations.
+- Cleanup: Notify is no longer used in Lobby (import + hook call removed) or GameScreen (dropped
+  from the useFeedback destructure); App still uses it for errors and connection changes.
+- Process: feature branch feature/quieter-notifications in the Frontend submodule, merged to master.
