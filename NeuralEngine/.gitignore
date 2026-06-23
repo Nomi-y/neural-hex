@@ -1,0 +1,7 @@
+# Local Python environment and caches
+.venv/
+__pycache__/
+*.pyc
+
+# Engine credentials — never commit the token (see run_engine.sh / README)
+engine.env

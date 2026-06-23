@@ -125,6 +125,17 @@ ENGINE_WS=ws://<backend>:3001 ENGINE_ID=<id> ENGINE_TOKEN=<token> \
   MODEL_PATH=checkpoints/best.pt python -m engine.play_engine
 ```
 
+Or use the chooser, which lists the checkpoints and launches the one you pick:
+
+```bash
+cp engine.env.example engine.env   # then put your EngineId/Token in engine.env (gitignored)
+./run_engine.sh                     # lists checkpoints/*.pt, prompts for a number
+./run_engine.sh 1                   # or pick non-interactively
+```
+
+`engine.env` holds `ENGINE_ID` / `ENGINE_TOKEN` / `ENGINE_WS` and is gitignored — keep your token out
+of version control (re-register on the backend if it ever leaks).
+
 Now challenge "NeuralHex" from the web client (13×13), and use **Analyse** on a finished 13×13 match to
 get its evaluation overlaid on the replay. `ENGINE_SIMS` / `ENGINE_MOVE_SECONDS` / `ENGINE_TEMPERATURE`
 tune play strength, thinking time, and determinism.
