@@ -8,7 +8,7 @@ turn.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Callable, List, Optional
 
 import numpy as np
 
@@ -29,14 +29,18 @@ class _Game:
 
 
 def play_match(cfg: Config, candidate: Evaluator, best: Evaluator, num_games: int, simulations: int,
-               rng: np.random.Generator) -> float:
-    """Return the candidate's win rate over `num_games` (it plays RED in half, BLUE in the other half)."""
+               rng: np.random.Generator, progress: Optional[Callable[[int, int], None]] = None) -> float:
+    """Return the candidate's win rate over `num_games` (it plays RED in half, BLUE in the other half).
+
+    `progress(done, total)` (optional) is called as games finish so a caller can log arena progress.
+    """
     num_actions = cfg.game.num_actions
     games = [
         _Game(HexState.initial(cfg.game.board_size, cfg.game.swap_rule), RED if i % 2 == 0 else BLUE)
         for i in range(num_games)
     ]
 
+    finished = 0
     while True:
         active = [g for g in games if not g.done]
         if not active:
@@ -56,6 +60,10 @@ def play_match(cfg: Config, candidate: Evaluator, best: Evaluator, num_games: in
                 if g.state.is_terminal():
                     g.done = True
                     g.winner = g.state.winner
+        newly_done = sum(1 for g in games if g.done)
+        if progress and newly_done != finished:
+            finished = newly_done
+            progress(finished, num_games)
 
     wins = sum(1 for g in games if g.winner == g.candidate_color)
     return wins / num_games

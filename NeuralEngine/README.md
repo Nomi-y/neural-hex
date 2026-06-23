@@ -86,13 +86,32 @@ scp -r NeuralEngine user@vps:~/NeuralEngine
 # 2. on the VPS
 cd ~/NeuralEngine && ./setup.sh                         # GPU: install the CUDA torch build
 source .venv/bin/activate && python smoke_test.py       # verify
-TRAIN_HOURS=4 ./run_training.sh                         # uses GPU if present, else all CPU cores
+./run_training.sh                                       # pick a preset (or: ./run_training.sh 5)
 #   (run under tmux/nohup so it survives logout)
 ```
 
+`run_training.sh` is a **preset chooser** — pick by number (or pass it as an argument). Each preset
+pins its device and sizes the net/sims/budget for a hardware class, and every knob can still be
+overridden from the environment (`TRAIN_HOURS=2 ./run_training.sh 5`):
+
+| # | Target | Notes |
+|---|--------|-------|
+| 1 | Personal computer (no GPU) — smoke run | tiny net, minutes/gen; verifies the pipeline only. |
+| 2 | Personal computer (no GPU) — local check | sanity-check loss/arena before renting a box. |
+| 3 | CPU VPS — balanced (all cores) | a real but modest engine. |
+| 4 | CPU VPS — strong (all cores) | bigger net for a long run on a many-core box. |
+| 5 | CUDA VPS — balanced **96×8** | matches the default net, so it **resumes** existing checkpoints. |
+| 6 | CUDA VPS — large 128×10 | higher ceiling; the bigger net **can't** resume a 96×8 checkpoint. |
+
+Presets pin `DEVICE` explicitly (CPU presets always run on CPU even where a GPU exists; CUDA presets
+fail loudly with no GPU rather than crawling on CPU). Changing the **net size** between runs means an
+existing `checkpoints/latest.pt` can't be loaded — it starts fresh, so move `checkpoints/` aside first.
+
 It resumes from `checkpoints/latest.pt` if restarted, and the deployable model is always
-`checkpoints/best.pt`. Watch the per-generation log: `samples`, `buffer`, `ploss`/`vloss`, `arena`
-win-rate, and whether the new net was `PROMOTED`.
+`checkpoints/best.pt`. The log is **timestamped** — every line carries the wall-clock time and the
+offset since the run started, `[14:05:01 +0:03:12] …` — and reports each phase as it happens:
+per-chunk self-play progress (`done/total, /s`), periodic `train` step losses, arena progress and
+win-rate, `PROMOTED`/`kept`, per-gen time, and an `elapsed`/`remaining (~N more gens)` ETA.
 
 ### Key knobs (env vars → `config.py`)
 

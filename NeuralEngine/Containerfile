@@ -1,0 +1,14 @@
+# Self-contained training image — runs self-play training without touching the host (handy on an
+# immutable distro with no package manager). CPU build; for a CUDA box install the CUDA torch wheel
+# and run with the GPU passed through (podman --device nvidia.com/gpu=all, needs nvidia-container-toolkit).
+FROM docker.io/python:3.12-slim
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Default to CPU preset 4; override by appending a command, e.g. `podman run ... hextrain ./run_training.sh 3`,
+# or with -e knobs (MCTS_SIMS, TRAIN_HOURS, …). Checkpoints land in /app/checkpoints — bind-mount it out.
+CMD ["./run_training.sh", "4"]

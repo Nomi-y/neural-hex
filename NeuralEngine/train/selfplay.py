@@ -12,7 +12,7 @@ all CPU cores (one process per core) when there is no accelerator — the "use a
 from __future__ import annotations
 
 import multiprocessing as mp
-from typing import List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -90,21 +90,49 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
 
 # ---- process-level parallelism for CPU boxes ----
 
-def _worker(args) -> List[Sample]:
-    cfg, state_dict, num_games, seed = args
+# Per-worker state, built once in the Pool initializer so the weights are pickled once per process
+# (not once per chunk). Lets us hand out many small chunks for load-balancing without re-sending the net.
+_WORKER: dict = {}
+
+
+def _init_worker(cfg: Config, np_state) -> None:
     import torch
 
-    torch.set_num_threads(1)  # each actor is single-threaded; parallelism comes from many actors
+    torch.set_num_threads(1)  # each worker is single-threaded; parallelism comes from many workers
     net = build_net(cfg)
-    net.load_state_dict(state_dict)
+    # Weights arrive as numpy: rebuild the tensor state dict here. Sending plain arrays avoids torch's
+    # shared-memory tensor reducer, which would hold an FD per tensor per worker in the parent and
+    # exhaust the open-file limit (EMFILE) once many workers run.
+    net.load_state_dict({k: torch.from_numpy(v) for k, v in np_state.items()})
     net.eval()
-    evaluator = Evaluator(net, "cpu")
+    _WORKER["cfg"] = cfg
+    _WORKER["evaluator"] = Evaluator(net, "cpu")
+
+
+def _play_chunk(args) -> Tuple[int, List[Sample]]:
+    num_games, seed = args
     rng = np.random.default_rng(seed)
-    return play_games(evaluator, cfg, num_games, add_noise=True, rng=rng)
+    samples = play_games(_WORKER["evaluator"], _WORKER["cfg"], num_games, add_noise=True, rng=rng)
+    return num_games, samples  # report game count so the parent can track progress in completion order
 
 
-def generate(cfg: Config, state_dict, num_games: int, base_seed: int) -> List[Sample]:
-    """Generate `num_games` self-play games using the given network weights."""
+def _split(total: int, parts: int) -> List[int]:
+    """Split `total` games into `parts` near-equal chunk sizes, each >= 1."""
+    parts = max(1, min(parts, total))
+    base, extra = divmod(total, parts)
+    return [base + (1 if i < extra else 0) for i in range(parts)]
+
+
+ProgressFn = Callable[[int, int], None]
+
+
+def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
+             progress: Optional[ProgressFn] = None) -> List[Sample]:
+    """Generate `num_games` self-play games using the given network weights.
+
+    `progress(done, total)` (optional) is called from this process as games complete — per batched
+    chunk on GPU, per finished actor on CPU — so the caller can log incremental progress.
+    """
     if cfg.device in ("cuda", "mps"):
         import torch
 
@@ -116,18 +144,32 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int) -> List[Sa
         # One actor, but games_per_generation are batched in chunks of parallel_games for big NN batches.
         out: List[Sample] = []
         remaining = num_games
+        done = 0
         while remaining > 0:
             chunk = min(cfg.selfplay.parallel_games, remaining)
             out.extend(play_games(evaluator, cfg, chunk, add_noise=True, rng=rng))
             remaining -= chunk
+            done += chunk
+            if progress:
+                progress(done, num_games)
         return out
 
-    # CPU: fan out across cores.
+    # CPU: fan out across cores. Split into many small chunks (more than there are workers) so the pool
+    # load-balances — fast cores keep grabbing chunks instead of idling while one slow core finishes a
+    # big share, which otherwise leaves a long straggler tail. The net is loaded once per worker (via the
+    # initializer), so smaller chunks don't re-pickle the weights. On CPU the NN runs one sample at a
+    # time regardless of batch, so a smaller chunk costs almost no extra compute.
     actors = cfg.resolve_actors()
-    per_actor = max(1, num_games // actors)
-    cpu_state = {k: v.cpu() for k, v in state_dict.items()}
-    tasks = [(cfg, cpu_state, per_actor, base_seed + i) for i in range(actors)]
+    np_state = {k: v.detach().cpu().numpy() for k, v in state_dict.items()}
+    chunk_sizes = _split(num_games, actors * 4)
+    tasks = [(size, base_seed + i) for i, size in enumerate(chunk_sizes)]
     ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=actors) as pool:
-        results = pool.map(_worker, tasks)
+    results: List[List[Sample]] = []
+    done = 0
+    with ctx.Pool(processes=actors, initializer=_init_worker, initargs=(cfg, np_state)) as pool:
+        for n, samples in pool.imap_unordered(_play_chunk, tasks):
+            results.append(samples)
+            done += n
+            if progress:
+                progress(done, num_games)
     return [s for r in results for s in r]
