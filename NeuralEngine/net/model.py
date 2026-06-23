@@ -1,0 +1,79 @@
+"""Policy + value network — a small AlphaZero-style residual ConvNet.
+
+A convolutional residual tower feeds two heads:
+  - policy: a distribution over the N*N+1 actions (cells + swap), in canonical orientation,
+  - value:  a scalar in [-1, 1], the side-to-move's expected game result.
+
+Width/depth are config knobs (NetConfig) so the same code scales from a laptop smoke test to a VPS run.
+"""
+
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class _ResidualBlock(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.bn2(self.conv2(x))
+        return F.relu(x + residual)
+
+
+class HexNet(nn.Module):
+    def __init__(self, board_size: int, in_planes: int, channels: int, blocks: int, value_hidden: int) -> None:
+        super().__init__()
+        self.board_size = board_size
+        self.num_actions = board_size * board_size + 1
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_planes, channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+        )
+        self.tower = nn.Sequential(*[_ResidualBlock(channels) for _ in range(blocks)])
+
+        # Policy head: 2 feature maps -> flat -> action logits (cells + swap).
+        self.policy_conv = nn.Conv2d(channels, 2, 1, bias=False)
+        self.policy_bn = nn.BatchNorm2d(2)
+        self.policy_fc = nn.Linear(2 * board_size * board_size, self.num_actions)
+
+        # Value head: 1 feature map -> hidden -> tanh scalar.
+        self.value_conv = nn.Conv2d(channels, 1, 1, bias=False)
+        self.value_bn = nn.BatchNorm2d(1)
+        self.value_fc1 = nn.Linear(board_size * board_size, value_hidden)
+        self.value_fc2 = nn.Linear(value_hidden, 1)
+
+    def forward(self, x: torch.Tensor):
+        x = self.stem(x)
+        x = self.tower(x)
+
+        p = F.relu(self.policy_bn(self.policy_conv(x)))
+        p = p.flatten(1)
+        policy_logits = self.policy_fc(p)
+
+        v = F.relu(self.value_bn(self.value_conv(x)))
+        v = v.flatten(1)
+        v = F.relu(self.value_fc1(v))
+        value = torch.tanh(self.value_fc2(v)).squeeze(-1)
+
+        return policy_logits, value
+
+
+def build_net(cfg) -> HexNet:
+    return HexNet(
+        board_size=cfg.game.board_size,
+        in_planes=cfg.net.in_planes,
+        channels=cfg.net.channels,
+        blocks=cfg.net.blocks,
+        value_hidden=cfg.net.value_hidden,
+    )
