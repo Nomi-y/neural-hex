@@ -96,6 +96,14 @@ def main() -> None:
     wr2 = arena.play_match_parallel(cfg, net.state_dict(), net.state_dict(), num_games=4, simulations=8, base_seed=2)
     print(f"  parallel: {len(par_samples)} self-play samples, arena win rate {wr2:.0%}")
 
+    # Watchdog: a microscopic timeout guarantees no result arrives in time, forcing the pool-watchdog
+    # branch — proves a dead/deadlocked worker can't hang the loop forever (it returns instead).
+    cfg.train.arena_timeout = 1e-9
+    wr3 = arena.play_match_parallel(cfg, net.state_dict(), net.state_dict(), num_games=4, simulations=8, base_seed=3)
+    assert 0.0 <= wr3 <= 1.0, "watchdog path should still return a valid win rate"
+    cfg.train.arena_timeout = 900.0
+    print(f"  watchdog path returned {wr3:.0%} without hanging")
+
     print(f"  solver on a near-terminal position returned value={val} action={action}")
     print("SMOKE TEST PASSED")
 

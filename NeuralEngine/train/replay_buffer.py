@@ -19,6 +19,7 @@ class ReplayBuffer:
     def __init__(self, capacity: int, board_size: int) -> None:
         self.buffer: deque[Sample] = deque(maxlen=capacity)
         self.board_size = board_size
+        self.capacity = capacity   # store for later serialisation
 
     def add(self, planes: np.ndarray, pi: np.ndarray, z: float) -> None:
         self.buffer.append((planes.astype(np.float32), pi.astype(np.float32), float(z)))
@@ -53,3 +54,22 @@ class ReplayBuffer:
             np.stack(pi_list).astype(np.float32),
             np.asarray(z_list, dtype=np.float32),
         )
+
+    # ─── NEW: persistence helpers ────────────────────────────────────────
+    def state_dict(self) -> dict:
+        """Serialisable snapshot of the whole buffer."""
+        # Store as list of (planes, pi, z) – numpy arrays are handled by torch.save.
+        items = list(self.buffer)
+        return {
+            "capacity": self.capacity,
+            "board_size": self.board_size,
+            "buffer": items,
+        }
+
+    def load_state_dict(self, d: dict) -> None:
+        """Restore buffer from a previously saved state_dict."""
+        self.capacity = d["capacity"]
+        self.board_size = d["board_size"]
+        self.buffer = deque(maxlen=self.capacity)
+        for planes, pi, z in d["buffer"]:
+            self.add(planes, pi, z)

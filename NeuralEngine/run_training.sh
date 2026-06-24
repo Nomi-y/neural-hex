@@ -5,18 +5,29 @@
 #   ./run_training.sh           # prints the presets, prompts for a number
 #   ./run_training.sh 5         # picks preset #5 non-interactively
 #
-# Each preset exports the relevant config.py knobs (DEVICE, net size, sims, batch sizes, time budget).
-# Every preset PINS its device (DEVICE=cpu or DEVICE=cuda) so the choice is deterministic — a CPU preset
-# always runs on CPU even on a box that has a GPU, and a CUDA preset fails loudly if there's no GPU
-# rather than silently crawling on CPU.
+# Two workflows exist:
+#   1. Container (hyperparams.toml present):
+#      The TOML is the single source of truth — no env vars are set unless you
+#      explicitly pass a preset number (which overrides the TOML).
+#   2. Bare-metal (no TOML):
+#      The old flow: pick a preset, env vars are exported, training runs.
 #
-# Anything you set in the environment beforehand still wins — every assignment is  export VAR="${VAR:-...}"
-# so e.g.  TRAIN_HOURS=2 ./run_training.sh 5  overrides only the budget.
+# Each preset exports the relevant config.py knobs (DEVICE, net size, sims, batch
+# sizes, time budget). Every preset PINS its device (DEVICE=cpu or DEVICE=cuda)
+# so the choice is deterministic — a CPU preset always runs on CPU even on a box
+# that has a GPU, and a CUDA preset fails loudly if there's no GPU rather than
+# silently crawling on CPU.
 #
-# Safe to stop (Ctrl-C) and re-run: it resumes from checkpoints/latest.pt and the deployable model is
-# always checkpoints/best.pt. NOTE: resuming only works if the NET size matches the checkpoint — a
-# preset with a different NET_CHANNELS/NET_BLOCKS cannot load an existing checkpoint and starts fresh,
-# so don't switch net size mid-run (move checkpoints/ aside first if you mean to).
+# Anything you set in the environment beforehand still wins — every assignment is
+# export VAR="${VAR:-...}" so e.g. TRAIN_HOURS=2 ./run_training.sh 5 overrides
+# only the budget.
+#
+# Safe to stop (Ctrl-C) and re-run: it resumes from checkpoints/latest.pt and the
+# deployable model is always checkpoints/best.pt. NOTE: resuming only works if the
+# NET size matches the checkpoint — a preset with a different NET_CHANNELS/NET_BLOCKS
+# cannot load an existing checkpoint and starts fresh, so don't switch net size
+# mid-run (move checkpoints/ aside first if you mean to).
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -24,9 +35,25 @@ cd "$(dirname "$0")"
 source .venv/bin/activate 2>/dev/null || true
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
-# Many CPU self-play actors open a lot of files/pipes/semaphores at once; lift the soft FD limit toward
-# the hard limit so a high core count doesn't hit EMFILE ("Too many open files"). Best-effort.
+# Many CPU self-play actors open a lot of files/pipes/semaphores at once; lift the
+# soft FD limit toward the hard limit so a high core count doesn't hit EMFILE
+# ("Too many open files"). Best-effort.
 ulimit -n "$(ulimit -Hn 2>/dev/null || echo 65535)" 2>/dev/null || true
+
+# ── TOML-aware: if hyperparams.toml exists, it is the source of truth ─────────
+# When the user explicitly passes a preset number, env vars override TOML
+# (explicit beats implicit).  When no preset is given, let TOML speak.
+
+choice="${1:-}"
+
+if [ -f hyperparams.toml ] && [ -z "$choice" ]; then
+  echo "hyperparams.toml found — using it as the configuration source."
+  echo "To override with a preset:  ./run_training.sh <number>"
+  echo
+  exec python -m train.train
+fi
+
+# ── Old flow: no TOML, or explicit preset requested ───────────────────────────
 
 cat <<'MENU'
 Choose a training preset. Time/iteration figures are rough and scale with the VPS you run on
@@ -57,7 +84,6 @@ Choose a training preset. Time/iteration figures are rough and scale with the VP
                            (see README). Fresh start (large net).
 MENU
 
-choice="${1:-}"
 if [ -z "$choice" ]; then
   read -rp "Preset number [1-7]: " choice
 fi
@@ -126,6 +152,9 @@ echo
 echo "Preset $label"
 echo "  device=${DEVICE} net=${NET_CHANNELS}x${NET_BLOCKS} sims=${MCTS_SIMS} parallel=${PARALLEL_GAMES}"
 echo "  games/gen=${GAMES_PER_GEN} train_steps=${TRAIN_STEPS} arena=${ARENA_GAMES}@${ARENA_SIMS} budget=${TRAIN_HOURS}h"
+if [ -f hyperparams.toml ]; then
+  echo "  (hyperparams.toml is present — these env vars will override its values)"
+fi
 echo
 
 exec python -m train.train

@@ -21,7 +21,8 @@ from config import Config
 from hex.board import HexState, RED, BLUE
 from net.evaluator import Evaluator
 from search import mcts
-from train.selfplay import build_eval_net, to_numpy_state, chunk_sizes
+from train.selfplay import build_eval_net, to_numpy_state, chunk_sizes, drain_pool
+from train.clock import log
 
 
 class _Game:
@@ -122,10 +123,20 @@ def play_match_parallel(cfg: Config, cand_state, best_state, num_games: int, sim
     ctx = mp.get_context("spawn")
     total_wins = 0
     done = 0
+
+    def _on(item) -> None:
+        nonlocal total_wins, done
+        n, wins = item
+        total_wins += wins
+        done += n
+        if progress:
+            progress(done, num_games)
+
     with ctx.Pool(processes=actors, initializer=_init_arena_worker, initargs=(cfg, cand_np, best_np)) as pool:
-        for n, wins in pool.imap_unordered(_play_arena_chunk, tasks):
-            total_wins += wins
-            done += n
-            if progress:
-                progress(done, num_games)
+        it = pool.imap_unordered(_play_arena_chunk, tasks)
+        ok = drain_pool(pool, it, len(tasks), cfg.train.arena_timeout, _on)
+    if not ok:
+        log(f"[arena] WARNING: worker watchdog fired after {cfg.train.arena_timeout:.0f}s with no result "
+            f"— terminated pool. Scoring {done}/{num_games} completed games; the rest count as losses, "
+            f"so a wedged arena won't falsely promote.")
     return total_wins / num_games

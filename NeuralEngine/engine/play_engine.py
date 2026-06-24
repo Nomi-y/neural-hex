@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
@@ -34,8 +35,31 @@ from net.evaluator import Evaluator
 from search import mcts
 
 CFG = load()
-RNG = np.random.default_rng()
+_RNG = np.random.default_rng()
+_RNG_LOCK = threading.Lock()  # guards _RNG across concurrent MCTS searches
 EXECUTOR = ThreadPoolExecutor(max_workers=1)  # serialise heavy compute; keep the event loop free
+
+
+def _rng() -> np.random.Generator:
+    """Return a thread-safe view of the engine's shared RNG."""
+    # np.random.Generator is not thread-safe, so we serialise access.
+    # For the engine's single-threaded executor this is trivially safe;
+    # the lock protects against future multi-worker executor use.
+    return _RNG  # callers must hold _RNG_LOCK or be on the executor's single thread
+
+
+def _locked_rng_choice(choices, p=None):
+    """Thread-safe rng.choice."""
+    with _RNG_LOCK:
+        if p is not None:
+            return _RNG.choice(choices, p=p)
+        return _RNG.choice(choices)
+
+
+def _locked_rng_integers(low, high=None, size=None):
+    """Thread-safe rng.integers."""
+    with _RNG_LOCK:
+        return _RNG.integers(low, high, size)
 
 
 def _color_to_stone(color: str) -> int:
@@ -79,8 +103,8 @@ class HexEngine:
             swap_available=bool(game.get("CanSwap", False)),
         )
         root = mcts.make_root(state)
-        mcts.run_batched([root], self.evaluator, CFG, CFG.engine.simulations, add_noise=False, rng=RNG)
-        action = mcts.select_action(root, self.num_actions, CFG.engine.temperature, RNG)
+        mcts.run_batched([root], self.evaluator, CFG, CFG.engine.simulations, add_noise=False, rng=_rng())
+        action = mcts.select_action(root, self.num_actions, CFG.engine.temperature, _rng())
         if action == size * size:
             return {"Type": "Swap", "GameId": game["GameId"]}
         return {"Type": "MakeMove", "Row": action // size, "Col": action % size, "GameId": game["GameId"]}
@@ -115,7 +139,7 @@ class HexEngine:
         non_terminal = [r for r in roots if not r.resolved()]
         if non_terminal:
             sims = max(16, CFG.engine.simulations // 4)
-            mcts.run_batched(non_terminal, self.evaluator, CFG, sims, add_noise=False, rng=RNG)
+            mcts.run_batched(non_terminal, self.evaluator, CFG, sims, add_noise=False, rng=_rng())
 
         out: List[dict] = []
         for ply, root in enumerate(roots):

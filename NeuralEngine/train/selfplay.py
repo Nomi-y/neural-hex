@@ -22,6 +22,7 @@ from net.model import build_net
 from net.evaluator import Evaluator
 from net.encoding import encode, real_to_canon_action
 from search import mcts
+from train.clock import log
 
 Sample = Tuple[np.ndarray, np.ndarray, float]
 
@@ -150,6 +151,24 @@ def chunk_sizes(cfg: Config, num_games: int, actors: int) -> List[int]:
     return split_evenly(num_games, actors * 4)
 
 
+def drain_pool(pool, result_iter, num_tasks: int, timeout: float, on_result: Callable[[object], None]) -> bool:
+    """Consume `num_tasks` results from an `imap_unordered` iterator, calling `on_result(item)` for each.
+
+    If no result arrives within `timeout` seconds (<=0 disables the watchdog), assume a worker has died
+    or deadlocked: terminate the pool and stop early. Returns True if every result was collected, False
+    if it timed out. This is the guard against the imap_unordered hang where one dead worker would
+    otherwise block the parent forever (no per-result deadline of its own)."""
+    to = timeout if timeout and timeout > 0 else None
+    for _ in range(num_tasks):
+        try:
+            item = result_iter.next(to)
+        except mp.TimeoutError:
+            pool.terminate()
+            return False
+        on_result(item)
+    return True
+
+
 ProgressFn = Callable[[int, int], None]
 
 
@@ -188,10 +207,20 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
     ctx = mp.get_context("spawn")
     results: List[List[Sample]] = []
     done = 0
+
+    def _on(item) -> None:
+        nonlocal done
+        n, samples = item
+        results.append(samples)
+        done += n
+        if progress:
+            progress(done, num_games)
+
     with ctx.Pool(processes=actors, initializer=_init_worker, initargs=(cfg, np_state)) as pool:
-        for n, samples in pool.imap_unordered(_play_chunk, tasks):
-            results.append(samples)
-            done += n
-            if progress:
-                progress(done, num_games)
+        it = pool.imap_unordered(_play_chunk, tasks)
+        ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on)
+    if not ok:
+        log(f"[self-play] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s with no "
+            f"result — terminated pool, continuing with {done}/{num_games} games "
+            f"({sum(len(r) for r in results)} samples).")
     return [s for r in results for s in r]

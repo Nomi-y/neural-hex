@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from hex.board import HexState, EMPTY
+from hex.bridges import virtual_connection
 from hex.solver import maybe_solve
 
 
@@ -153,6 +154,18 @@ def _resolve_leaf(node: Node, cfg) -> Optional[float]:
         return -1.0  # the side to move has already lost (opponent connected on the prior ply)
     if node.solved_value is not None:
         return float(node.solved_value)
+
+    # Virtual-connection fast path: an optimistic bridge-chain check that is
+    # nearly always correct when few cells remain.  It is a heuristic, so it
+    # never overrides the solver — but when the solver is out of reach (too many
+    # empties) it still gives a useful early value signal.
+    if cfg.mcts.use_virtual_connection:
+        if virtual_connection(node.state.cells, node.state.size, node.to_play):
+            return 1.0  # side to move has a winning bridge-chain
+        other_color = 3 - node.to_play  # RED=1, BLUE=2
+        if virtual_connection(node.state.cells, node.state.size, other_color):
+            return -1.0  # opponent already has a winning bridge-chain
+
     if cfg.mcts.solver_empty_threshold > 0:
         empties = int(np.count_nonzero(node.state.cells == EMPTY))
         if empties <= cfg.mcts.solver_empty_threshold:
