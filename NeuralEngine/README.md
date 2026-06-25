@@ -1,4 +1,4 @@
-# NeuralEngine — a self-training Hex engine (AlphaZero-style)
+# NeuralEngine — a self-training Hex engine (AlphaZero-style) 
 
 A neural-network Hex engine that trains itself by self-play and plugs into the main backend as an
 **external engine** (it both plays and analyses), following `../Backend/Engines.md`. Fixed **13×13**.
