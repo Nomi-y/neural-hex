@@ -1,23 +1,8 @@
 # ============================================================================
 #  NeuralEngine — Hyperparameters (single source of truth)
 # ============================================================================
-#
-#  This file is THE place to configure your training run.  Every knob that
-#  matters lives here with an explanation and suggested values.
-#
-#  How to use:
-#    1. Edit this file
-#    2. Run  ./build_container.sh          (builds & optionally tags the image)
-#    3. Run  docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
-#
-#  The TOML is baked into the container image at build time.  You can still
-#  override any value at runtime with an environment variable (e.g.
-#  `docker run -e TRAIN_HOURS=2 …`), but the baked TOML is the default.
-# ============================================================================
-
-# ── Game ────────────────────────────────────────────────────────────────────
 [game]
-board_size = 11
+board_size = 13
 swap_rule = true
 
 [net]
@@ -26,39 +11,39 @@ blocks = 8
 value_hidden = 128
 
 [mcts]
-simulations = 200
+simulations = 250
 c_puct = 1.5
 dirichlet_alpha = 0.15
-dirichlet_epsilon = 0.3
+dirichlet_epsilon = 0.30
 solver_empty_threshold = 7
-solver_node_budget = 200000
+solver_node_budget = 200_000
 use_virtual_connection = true
 
 [selfplay]
-parallel_games = 128
+parallel_games = 32
 temperature_moves = 20
 temperature = 1.0
 resign_threshold = -0.95
 resign_min_ply = 18
 
 [train]
-hours = 24.0
-games_per_generation = 768
-replay_buffer_size = 200000
+hours = 48.0
+games_per_generation = 256
+replay_buffer_size = 200_000
 batch_size = 512
-train_steps_per_generation = 400
+train_steps_per_generation = 500
 learning_rate = 0.001
 weight_decay = 0.0001
 grad_clip = 1.0
 lr_schedule = "cosine"
-lr_min = 1e-05
+lr_min = 0.00001
 lr_warmup_steps = 100
 lr_decay = 0.5
 lr_step_gens = 20
 value_loss_weight = 1.0
-arena_games = 48
+arena_games = 64
 arena_win_rate = 0.55
-arena_simulations = 100
+arena_simulations = 120
 selfplay_timeout = 1800.0
 arena_timeout = 900.0
 checkpoint_dir = "checkpoints"
@@ -73,11 +58,49 @@ temperature = 0.0
 move_budget_seconds = 5.0
 backend_ws = "ws://localhost:3001"
 
-[presets]
-smoke = { description = "Smoke run — verify the pipeline, NOT strength", net = { channels = 32, blocks = 4 }, mcts = { simulations = 60 }, selfplay = { parallel_games = 16 }, train = { hours = 0.5, games_per_generation = 32, train_steps_per_generation = 100, batch_size = 256, arena_games = 12, arena_simulations = 60, lr_schedule = "constant" }, device = "cpu" }
-cpu-balanced = { description = "CPU VPS — balanced, all cores", net = { channels = 64, blocks = 6 }, mcts = { simulations = 200 }, selfplay = { parallel_games = 32 }, train = { hours = 48.0, games_per_generation = 192, train_steps_per_generation = 400, batch_size = 384, arena_games = 48 } }
-cuda-balanced = { description = "CUDA GPU — balanced 96×8 (resume-compatible with default)", net = { channels = 96, blocks = 8 }, mcts = { simulations = 250 }, selfplay = { parallel_games = 64 }, train = { hours = 6.0, games_per_generation = 512, train_steps_per_generation = 500, batch_size = 512, arena_games = 64 } }
-cuda-large = { description = "CUDA GPU — large 128×10 (A10/RTX 4090 class)", net = { channels = 128, blocks = 10 }, mcts = { simulations = 400 }, selfplay = { parallel_games = 128 }, train = { hours = 12.0, games_per_generation = 1024, train_steps_per_generation = 700, batch_size = 768, arena_games = 80, arena_simulations = 160 } }
-cuda-moon = { description = "CUDA GPU — MOON 160×16 (saturate an A100/H100/RTX PRO 6000)", net = { channels = 160, blocks = 16 }, mcts = { simulations = 600 }, selfplay = { parallel_games = 256 }, train = { hours = 10.0, games_per_generation = 8192, train_steps_per_generation = 1200, batch_size = 4096, arena_games = 160, arena_simulations = 200 } }
-cuda-affordable-11 = { description = "CUDA GPU — affordable 11×11 board (RTX 6000 Ada / A6000 / A40 class, ~$10-18 per 24h)", game = { board_size = 11 }, net = { channels = 96, blocks = 8 }, mcts = { simulations = 200 }, selfplay = { parallel_games = 128 }, train = { hours = 24.0, games_per_generation = 768, train_steps_per_generation = 400, batch_size = 512, arena_games = 48, arena_simulations = 100 } }
+# ============================================================================
+#  Hardware presets — applied at CI build time via PR body
+# ============================================================================
+[presets.smoke]
+  description = "Smoke run — verify the pipeline, NOT strength"
+  net = { channels = 32, blocks = 4 }
+  mcts = { simulations = 60 }
+  selfplay = { parallel_games = 16 }
+  train = { hours = 0.5, games_per_generation = 32, train_steps_per_generation = 100, batch_size = 256, arena_games = 12, arena_simulations = 60, lr_schedule = "constant" }
+  device = "cpu"
 
+[presets.cpu-balanced]
+  description = "CPU VPS — balanced, all cores"
+  net = { channels = 64, blocks = 6 }
+  mcts = { simulations = 200 }
+  selfplay = { parallel_games = 32 }
+  train = { hours = 48.0, games_per_generation = 192, train_steps_per_generation = 400, batch_size = 384, arena_games = 48 }
+
+[presets.cuda-balanced]
+  description = "CUDA GPU — balanced 96×8 (resume-compatible with default)"
+  net = { channels = 96, blocks = 8 }
+  mcts = { simulations = 250 }
+  selfplay = { parallel_games = 64 }
+  train = { hours = 6.0, games_per_generation = 512, train_steps_per_generation = 500, batch_size = 512, arena_games = 64 }
+
+[presets.cuda-large]
+  description = "CUDA GPU — large 128×10 (A10/RTX 4090 class)"
+  net = { channels = 128, blocks = 10 }
+  mcts = { simulations = 400 }
+  selfplay = { parallel_games = 128 }
+  train = { hours = 12.0, games_per_generation = 1024, train_steps_per_generation = 700, batch_size = 768, arena_games = 80, arena_simulations = 160 }
+
+[presets.cuda-moon]
+  description = "CUDA GPU — MOON 160×16 (saturate an A100/H100/RTX PRO 6000)"
+  net = { channels = 160, blocks = 16 }
+  mcts = { simulations = 600 }
+  selfplay = { parallel_games = 256 }
+  train = { hours = 10.0, games_per_generation = 8192, train_steps_per_generation = 1200, batch_size = 4096, arena_games = 160, arena_simulations = 200 }
+
+[presets.cuda-affordable-11]
+  description = "CUDA GPU — affordable 11×11 board (RTX 6000 Ada / A6000 / A40, ~$10-18 per 24h)"
+  game = { board_size = 11 }
+  net = { channels = 96, blocks = 8 }
+  mcts = { simulations = 200 }
+  selfplay = { parallel_games = 128 }
+  train = { hours = 24.0, games_per_generation = 768, train_steps_per_generation = 400, batch_size = 512, arena_games = 48, arena_simulations = 100 }
