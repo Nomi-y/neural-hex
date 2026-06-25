@@ -149,19 +149,43 @@ for sec in section_order:
     if not isinstance(data[sec], dict):
         out.write(f'{sec} = {repr(data[sec])}\n\n')
         continue
-    out.write(f'[{sec}]\n')
+    out.write(f'[{sec}]\\n')
     for key, value in data[sec].items():
         if isinstance(value, bool):
-            out.write(f'{key} = {str(value).lower()}\n')
+            out.write(f'{key} = {str(value).lower()}\\n')
         elif isinstance(value, str):
-            out.write(f'{key} = \"{value}\"\n')
+            out.write(f'{key} = \"{value}\"\\n')
         elif isinstance(value, float):
-            out.write(f'{key} = {value}\n')
+            out.write(f'{key} = {value}\\n')
         elif isinstance(value, int):
-            out.write(f'{key} = {value}\n')
+            out.write(f'{key} = {value}\\n')
         elif isinstance(value, dict):
-            # Nested dict (preset sections)
-            pass
+            # Nested dict — write as inline table (valid TOML for preset values).
+            pairs = []
+            for k, v in value.items():
+                if isinstance(v, bool):
+                    pairs.append(f'{k} = {str(v).lower()}')
+                elif isinstance(v, str):
+                    pairs.append(f'{k} = \"{v}\"')
+                elif isinstance(v, float):
+                    if v == int(v) and abs(v) < 1e12:
+                        pairs.append(f'{k} = {v}')
+                    else:
+                        pairs.append(f'{k} = {v}')
+                elif isinstance(v, int):
+                    pairs.append(f'{k} = {v}')
+                elif isinstance(v, dict):
+                    # Nested nested dict (e.g. train = { hours = 1.0, ... })
+                    inner = []
+                    for ik, iv in v.items():
+                        if isinstance(iv, bool):
+                            inner.append(f'{ik} = {str(iv).lower()}')
+                        elif isinstance(iv, str):
+                            inner.append(f'{ik} = \"{iv}\"')
+                        elif isinstance(iv, (int, float)):
+                            inner.append(f'{ik} = {iv}')
+                    pairs.append(f'{k} = {{ {', '.join(inner)} }}')
+            out.write(f'{key} = {{ {', '.join(pairs)} }}\\n')
     out.write('\n')
 
 with open('hyperparams.toml', 'w') as f:

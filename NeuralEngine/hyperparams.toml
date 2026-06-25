@@ -8,29 +8,25 @@
 #  How to use:
 #    1. Edit this file
 #    2. Run  ./build_container.sh          (builds & optionally tags the image)
-#    3. Run  podman run --device nvidia.com/gpu=all  -v ./checkpoints:/app/checkpoints  neuralengine
+#    3. Run  docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
 #
 #  The TOML is baked into the container image at build time.  You can still
 #  override any value at runtime with an environment variable (e.g.
-#  `podman run -e TRAIN_HOURS=2 …`), but the baked TOML is the default.
-#
-#  Values:  numbers are integers unless they have a decimal point.
-#           booleans are true / false (lowercase).
-#           strings are quoted.
+#  `docker run -e TRAIN_HOURS=2 …`), but the baked TOML is the default.
 # ============================================================================
 
 # ── Game ────────────────────────────────────────────────────────────────────
 [game]
-board_size = 13
+board_size = 11
 swap_rule = true
 
 [net]
-channels = 160
-blocks = 16
+channels = 96
+blocks = 8
 value_hidden = 128
 
 [mcts]
-simulations = 600
+simulations = 200
 c_puct = 1.5
 dirichlet_alpha = 0.15
 dirichlet_epsilon = 0.3
@@ -39,18 +35,18 @@ solver_node_budget = 200000
 use_virtual_connection = true
 
 [selfplay]
-parallel_games = 256
+parallel_games = 128
 temperature_moves = 20
 temperature = 1.0
 resign_threshold = -0.95
 resign_min_ply = 18
 
 [train]
-hours = 10.0
-games_per_generation = 8192
+hours = 24.0
+games_per_generation = 768
 replay_buffer_size = 200000
-batch_size = 4096
-train_steps_per_generation = 1200
+batch_size = 512
+train_steps_per_generation = 400
 learning_rate = 0.001
 weight_decay = 0.0001
 grad_clip = 1.0
@@ -60,9 +56,9 @@ lr_warmup_steps = 100
 lr_decay = 0.5
 lr_step_gens = 20
 value_loss_weight = 1.0
-arena_games = 160
+arena_games = 48
 arena_win_rate = 0.55
-arena_simulations = 200
+arena_simulations = 100
 selfplay_timeout = 1800.0
 arena_timeout = 900.0
 checkpoint_dir = "checkpoints"
@@ -78,4 +74,10 @@ move_budget_seconds = 5.0
 backend_ws = "ws://localhost:3001"
 
 [presets]
+smoke = { description = "Smoke run — verify the pipeline, NOT strength", net = { channels = 32, blocks = 4 }, mcts = { simulations = 60 }, selfplay = { parallel_games = 16 }, train = { hours = 0.5, games_per_generation = 32, train_steps_per_generation = 100, batch_size = 256, arena_games = 12, arena_simulations = 60, lr_schedule = "constant" }, device = "cpu" }
+cpu-balanced = { description = "CPU VPS — balanced, all cores", net = { channels = 64, blocks = 6 }, mcts = { simulations = 200 }, selfplay = { parallel_games = 32 }, train = { hours = 48.0, games_per_generation = 192, train_steps_per_generation = 400, batch_size = 384, arena_games = 48 } }
+cuda-balanced = { description = "CUDA GPU — balanced 96×8 (resume-compatible with default)", net = { channels = 96, blocks = 8 }, mcts = { simulations = 250 }, selfplay = { parallel_games = 64 }, train = { hours = 6.0, games_per_generation = 512, train_steps_per_generation = 500, batch_size = 512, arena_games = 64 } }
+cuda-large = { description = "CUDA GPU — large 128×10 (A10/RTX 4090 class)", net = { channels = 128, blocks = 10 }, mcts = { simulations = 400 }, selfplay = { parallel_games = 128 }, train = { hours = 12.0, games_per_generation = 1024, train_steps_per_generation = 700, batch_size = 768, arena_games = 80, arena_simulations = 160 } }
+cuda-moon = { description = "CUDA GPU — MOON 160×16 (saturate an A100/H100/RTX PRO 6000)", net = { channels = 160, blocks = 16 }, mcts = { simulations = 600 }, selfplay = { parallel_games = 256 }, train = { hours = 10.0, games_per_generation = 8192, train_steps_per_generation = 1200, batch_size = 4096, arena_games = 160, arena_simulations = 200 } }
+cuda-affordable-11 = { description = "CUDA GPU — affordable 11×11 board (RTX 6000 Ada / A6000 / A40 class, ~$10-18 per 24h)", game = { board_size = 11 }, net = { channels = 96, blocks = 8 }, mcts = { simulations = 200 }, selfplay = { parallel_games = 128 }, train = { hours = 24.0, games_per_generation = 768, train_steps_per_generation = 400, batch_size = 512, arena_games = 48, arena_simulations = 100 } }
 

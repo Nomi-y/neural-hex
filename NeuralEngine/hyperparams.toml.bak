@@ -1,0 +1,307 @@
+# ============================================================================
+#  NeuralEngine — Hyperparameters (single source of truth)
+# ============================================================================
+#
+#  This file is THE place to configure your training run.  Every knob that
+#  matters lives here with an explanation and suggested values.
+#
+#  How to use:
+#    1. Edit this file
+#    2. Run  ./build_container.sh          (builds & optionally tags the image)
+#    3. Run  docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
+#
+#  The TOML is baked into the container image at build time.  You can still
+#  override any value at runtime with an environment variable (e.g.
+#  `docker run -e TRAIN_HOURS=2 …`), but the baked TOML is the default.
+#
+#  Values:  numbers are integers unless they have a decimal point.
+#           booleans are true / false (lowercase).
+#           strings are quoted.
+# ============================================================================
+
+# ── Game ────────────────────────────────────────────────────────────────────
+[game]
+
+# Board size.  The network architecture and MCTS action space are built around
+# this, so changing it starts a fresh run (old checkpoints won't load).
+#   13  — standard Hex (recommended — what the engine is deployed for)
+#   5–11 — smaller boards for smoke-testing / quick experiments
+board_size = 13
+
+# The Hex pie rule: the second player may steal the opening move.
+# This is standard Hex — leave it on.
+swap_rule = true
+
+
+# ── Network ──────────────────────────────────────────────────────────────────
+[net]
+
+# Number of convolutional channels (width).
+# Higher = more capacity / stronger ceiling / more VRAM.
+#   32–48   — smoke-test / tiny GPU
+#   64–96   — modest GPU (RTX 3060/4060, T4)
+#   128–160 — fast GPU (A10, RTX 4090)
+#   192–256 — top-end (A100, H100)
+channels = 96
+
+# Number of residual blocks (depth).
+# Higher = deeper reasoning / more VRAM.
+#   4–6   — smoke / tiny
+#   8–10  — balanced
+#   12–16 — large (needs a fast GPU to train in reasonable time)
+blocks = 8
+
+# Hidden size of the value head's FC layer.
+# Rarely needs tuning; 128 is fine for almost all setups.
+value_hidden = 128
+
+
+# ── MCTS ─────────────────────────────────────────────────────────────────────
+[mcts]
+
+# Simulations per self-play move.  This is the dominant cost knob:
+# more sims = stronger play = slower self-play.  Training needs many games,
+# so keep this moderate.
+#   60–100  — smoke-test
+#   150–300 — balanced training (recommended)
+#   350–600 — strong play (needs a fast GPU)
+simulations = 250
+
+# PUCT exploration constant.  Higher = more exploration in the tree.
+#   1.0–2.0 is typical.  1.5 is the AlphaZero default and works well.
+c_puct = 1.5
+
+# Dirichlet noise added to the root prior during self-play (exploration).
+#   alpha:  concentration — smaller = noisier / more spread.
+#           ~0.15 for 13×13, ~0.03 for 19×19 Go, scales with action count.
+#   epsilon:  weight of noise vs network prior (0.30 = 30% noise).
+dirichlet_alpha = 0.15
+dirichlet_epsilon = 0.30
+
+# When a position has ≤ this many empty cells, run the exact endgame solver.
+# The solver proves wins/losses, making endgame play perfect.
+#   0    — disabled (network handles everything)
+#   5–9  — practical range (7 is the sweet spot for 13×13)
+#   >10  — solver gets expensive (O(b^n) grows fast)
+solver_empty_threshold = 7
+
+# Maximum nodes the solver will visit before giving up and returning "unknown."
+# 200k is enough for nearly all ≤7-empty positions on 13×13.
+solver_node_budget = 200_000
+
+# Use the optimistic virtual-connection (bridge-based) check as a fast
+# value signal during MCTS.  When enabled, positions where one side has a
+# clear bridge-chain to their edge get an early value estimate without
+# running the full solver.  Safe to leave on — it never overrides a
+# proven result.
+use_virtual_connection = true
+
+
+# ── Self-play ────────────────────────────────────────────────────────────────
+[selfplay]
+
+# Games stepped in lockstep inside each actor so their leaf evaluations
+# batch into one GPU call.  This is the per-process batch size.
+#   CPU: keep small (8–32) — no GPU to batch for
+#   GPU: 64–256 depending on VRAM (larger = better GPU utilization)
+parallel_games = 32
+
+# Number of opening plies where moves are sampled with temperature
+# (exploration).  After this, moves are played greedily (strongest).
+temperature_moves = 20
+
+# Temperature for the exploration phase (1.0 = proportional to visit counts).
+temperature = 1.0
+
+# Resign a game early if the root value drops below this threshold
+# (saves compute on clearly lost positions).  0 = disabled.
+#   -0.8 to -0.95 is a reasonable range.
+# NOTE: Resignation is DISABLED in code — games play to the last stone.
+# These values are kept for config compatibility but have no effect.
+resign_threshold = -0.95
+
+# Don't resign before this many plies (avoids early noise resignations).
+resign_min_ply = 18
+
+
+# ── Training loop ────────────────────────────────────────────────────────────
+[train]
+
+# Wall-clock budget in hours.  The loop stops cleanly when this elapses.
+# Increase this for stronger engines.
+#   0.5–2  — smoke-test / quick run
+#   4–8   — balanced (default)
+#   12–48 — serious run on a fast GPU
+hours = 48.0
+
+# Self-play games per generation.  More games = more data per generation
+# = each generation takes longer but may need fewer generations.
+#   128–256   — modest
+#   512–1024  — balanced GPU
+#   2048–8192 — large-scale (Moon preset)
+games_per_generation = 256
+
+# Maximum samples in the replay buffer (FIFO queue).  Old positions are
+# discarded as new ones arrive, so the network trains on recent data.
+#   50k–100k  — modest
+#   200k–500k — typical
+#   1M+       — large (big buffer = bigger checkpoints on disk)
+replay_buffer_size = 200_000
+
+# Training batch size (samples per optimizer step).
+#   256–512   — modest GPU
+#   1024–4096 — large GPU
+batch_size = 512
+
+# Optimizer steps per generation.  Each step processes one batch.
+#   200–400   — balanced
+#   500–800   — thorough
+#   900–1200  — large-scale
+train_steps_per_generation = 500
+
+# ---- Optimizer ----
+
+# Initial learning rate (Adam).  1e-3 is standard for AlphaZero-style training.
+learning_rate = 0.001
+
+# Weight decay (L2 regularization).  1e-4 is standard.
+weight_decay = 0.0001
+
+# Gradient clipping norm.  Prevents training instability from gradient spikes.
+#   0.5–2.0 is typical.  0 = disabled.
+grad_clip = 1.0
+
+# ---- Learning rate schedule ----
+# The LR decays over the training budget so the network fine-tunes later.
+# Options:
+#   "cosine"  — smooth cosine decay from initial LR to lr_min over the budget
+#   "step"    — multiply by lr_decay every lr_step_epochs (in generations)
+#   "constant" — no decay
+lr_schedule = "cosine"
+
+# Minimum LR (for "cosine" schedule).  Usually 1–10% of the initial LR.
+lr_min = 0.00001
+
+# Warmup: linearly ramp LR from 0 to learning_rate over this many
+# optimizer steps at the start of every generation.
+#   0     — disabled
+#   50–200 — smooth start (helps avoid early weird gradients)
+lr_warmup_steps = 100
+
+# For "step" schedule only: multiply LR by this factor every lr_step_gens.
+lr_decay = 0.5
+lr_step_gens = 20
+
+# ---- Loss ----
+
+# Weight of the value loss relative to the policy loss.
+#   0.5–1.0 is typical.  1.0 weights them equally.
+value_loss_weight = 1.0
+
+# ---- Arena gate ----
+# A freshly trained network only replaces "best" if it beats the incumbent
+# by at least this win rate in a match.
+
+arena_games = 64         # Number of arena games per generation
+arena_win_rate = 0.55    # Win rate threshold for promotion (> 0.5)
+arena_simulations = 120  # MCTS sims per arena move (less than self-play for speed)
+
+# ---- Watchdog ----
+# If no worker result arrives within this many seconds, assume a worker
+# died or deadlocked and proceed with whatever completed.
+#   0 = disabled (not recommended for long unattended runs)
+selfplay_timeout = 1800.0  # 30 minutes
+arena_timeout = 900.0      # 15 minutes
+
+# ---- Checkpointing ----
+checkpoint_dir = "checkpoints"
+
+# Save every single generation's network as its own checkpoint file
+# (e.g. checkpoints/gen_0005.pt).  Useful for post-hoc analysis or picking
+# a specific generation to deploy.  Disk cost is one model file per gen
+# (~tens of MB each with the moon preset).
+save_every_checkpoint = false
+
+# Directory for persistent log output.  When set, the training loop writes
+# a timestamped log file here so logs survive container restarts (the host
+# bind-mounts this directory).  Leave empty to log to stdout only.
+log_dir = "logs"
+
+# Random seed (0 = arbitrary but reproducible within the same torch version).
+seed = 0
+
+# ---- Multi-process ----
+# Number of self-play/arena worker processes.
+#   0 = auto-detect (CPU: cores−1,  GPU: cores−1,  MPS: 1)
+#   Set explicitly to override, e.g. 4 on a 4-core machine.
+num_actors = 0
+
+
+# ── Deployed engine ──────────────────────────────────────────────────────────
+[engine]
+
+# MCTS simulations when playing a real game (not training).
+# More = stronger but slower.  200–800 is reasonable.
+simulations = 400
+
+# Move temperature: 0 = always pick the most-visited move (strongest).
+# >0 = sample from the visit distribution (more variety, weaker).
+temperature = 0.0
+
+# Soft time limit per move in seconds.  The search stops early if this
+# elapses (even if not all simulations completed).  0 = no limit.
+move_budget_seconds = 5.0
+
+# Backend WebSocket URL.
+backend_ws = "ws://localhost:3001"
+
+
+# ============================================================================
+#  Hardware presets
+# ============================================================================
+#
+#  Ready-to-use overrides for common hardware.  Use them with:
+#      ./build_container.sh --preset cuda-balanced
+#
+#  Applying a preset modifies hyperparams.toml IN PLACE — the values in the
+#  sections above are replaced with the preset's values.  The preset ONLY
+#  sets knobs for the hardware — it does not change game rules or engine config.
+# ============================================================================
+
+[presets]
+
+[presets.smoke]
+  description = "Smoke run — verify the pipeline, NOT strength"
+  net = { channels = 32, blocks = 4 }
+  mcts = { simulations = 60 }
+  selfplay = { parallel_games = 16 }
+  train = { hours = 0.5, games_per_generation = 32, train_steps_per_generation = 100, batch_size = 256, arena_games = 12, arena_simulations = 60, lr_schedule = "constant" }
+  device = "cpu"
+
+[presets.cpu-balanced]
+  description = "CPU VPS — balanced, all cores"
+  net = { channels = 64, blocks = 6 }
+  mcts = { simulations = 200 }
+  selfplay = { parallel_games = 32 }
+  train = { hours = 48.0, games_per_generation = 192, train_steps_per_generation = 400, batch_size = 384, arena_games = 48 }
+
+[presets.cuda-balanced]
+  description = "CUDA GPU — balanced 96×8 (resume-compatible with default)"
+  net = { channels = 96, blocks = 8 }
+  mcts = { simulations = 250 }
+  selfplay = { parallel_games = 64 }
+  train = { hours = 6.0, games_per_generation = 512, train_steps_per_generation = 500, batch_size = 512, arena_games = 64 }
+
+[presets.cuda-large]
+  description = "CUDA GPU — large 128×10 (A10/RTX 4090 class)"
+  net = { channels = 128, blocks = 10 }
+  mcts = { simulations = 400 }
+  selfplay = { parallel_games = 128 }
+  train = { hours = 12.0, games_per_generation = 1024, train_steps_per_generation = 700, batch_size = 768, arena_games = 80, arena_simulations = 160 }
+
+[presets.cuda-moon]
+  description = "CUDA GPU — MOON 160×16 (saturate an A100/H100/RTX PRO 6000)"
+  net = { channels = 160, blocks = 16 }
+  mcts = { simulations = 600 }
+  selfplay = { parallel_games = 256 }
+  train = { hours = 10.0, games_per_generation = 8192, train_steps_per_generation = 1200, batch_size = 4096, arena_games = 160, arena_simulations = 200 }
