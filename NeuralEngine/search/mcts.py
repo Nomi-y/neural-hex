@@ -25,18 +25,20 @@ from hex.solver import maybe_solve
 
 class Node:
     __slots__ = ("state", "to_play", "expanded", "terminal", "solved_value", "solved_action",
-                 "priors", "child_n", "child_w", "children", "sum_n")
+                 "num_actions", "priors", "child_n", "child_w", "children", "sum_n")
 
-    def __init__(self, state: HexState) -> None:
+    def __init__(self, state: HexState, num_actions: int) -> None:
         self.state = state
         self.to_play = state.to_move
         self.expanded = False
         self.terminal = state.is_terminal()
         self.solved_value: Optional[int] = None
         self.solved_action: Optional[int] = None
+        self.num_actions = num_actions
         self.priors: Dict[int, float] = {}
-        self.child_n: Dict[int, int] = {}
-        self.child_w: Dict[int, float] = {}
+        # Fixed-size arrays indexed by action (faster than dicts for lookup/update)
+        self.child_n = [0] * num_actions
+        self.child_w = [0.0] * num_actions
         self.children: Dict[int, "Node"] = {}
         self.sum_n = 0
 
@@ -46,16 +48,18 @@ class Node:
 
 
 def make_root(state: HexState) -> Node:
-    return Node(state)
+    return Node(state, state.size * state.size + 1)
 
 
 def _select(node: Node, c_puct: float) -> int:
     sqrt_total = math.sqrt(node.sum_n + 1)
     best_score = -1e30
     best_action = -1
+    cn = node.child_n
+    cw = node.child_w
     for action, prior in node.priors.items():
-        n = node.child_n.get(action, 0)
-        q = (node.child_w[action] / n) if n > 0 else 0.0
+        n = cn[action]
+        q = (cw[action] / n) if n > 0 else 0.0
         u = c_puct * prior * sqrt_total / (1 + n)
         score = q + u
         if score > best_score:
@@ -91,13 +95,14 @@ def _backup(path: List[tuple], leaf_value: float) -> None:
     value = leaf_value
     for node, action in reversed(path):
         value = -value
-        node.child_n[action] = node.child_n.get(action, 0) + 1
-        node.child_w[action] = node.child_w.get(action, 0.0) + value
+        node.child_n[action] += 1
+        node.child_w[action] += value
         node.sum_n += 1
 
 
 def run_batched(roots: List[Node], evaluator, cfg, simulations: int, add_noise: bool, rng: np.random.Generator) -> None:
     """Run `simulations` PUCT simulations on each root, batching leaf network evaluations across roots."""
+    num_actions = cfg.game.num_actions
     # Expand every root first (one batched evaluation), so PUCT has priors from move one.
     _ensure_expanded(roots, evaluator, cfg)
     if add_noise:
@@ -116,7 +121,7 @@ def run_batched(roots: List[Node], evaluator, cfg, simulations: int, add_noise: 
             while node.expanded and not node.resolved():
                 action = _select(node, cfg.mcts.c_puct)
                 if action not in node.children:
-                    node.children[action] = Node(node.state.play(action))
+                    node.children[action] = Node(node.state.play(action), num_actions)
                 path.append((node, action))
                 node = node.children[action]
             # `node` is a leaf: terminal, solved, or not-yet-expanded.
@@ -178,13 +183,12 @@ def _resolve_leaf(node: Node, cfg) -> Optional[float]:
 
 
 def visit_counts(node: Node, num_actions: int) -> np.ndarray:
-    counts = np.zeros(num_actions, dtype=np.float32)
+    counts = np.array(node.child_n, dtype=np.float32)
     if node.solved_value is not None and node.solved_action is not None:
         # A solved root: put all weight on the proven best move.
-        counts[node.solved_action] = 1.0
-        return counts
-    for action, n in node.child_n.items():
-        counts[action] = n
+        out = np.zeros(num_actions, dtype=np.float32)
+        out[node.solved_action] = 1.0
+        return out
     return counts
 
 
@@ -216,9 +220,11 @@ def ranked_moves(node: Node, num_actions: int):
     counts = visit_counts(node, num_actions)
     total = counts.sum()
     moves = []
-    for action in node.priors.keys() if not node.child_n else node.child_n.keys():
-        n = node.child_n.get(action, 0)
-        q = (node.child_w[action] / n) if n > 0 else 0.0
+    cn = node.child_n
+    cw = node.child_w
+    for action in node.priors:
+        n = cn[action]
+        q = (cw[action] / n) if n > 0 else 0.0
         prob = (counts[action] / total) if total > 0 else 0.0
         moves.append((action, float(prob), float(q)))
     moves.sort(key=lambda m: m[1], reverse=True)

@@ -3,5 +3,10 @@
 __pycache__/
 *.pyc
 
+# Training artifacts
+checkpoints/*.pt
+checkpoints/*.tmp
+logs/
+
 # Engine credentials — never commit the token (see run_engine.sh / README)
 engine.env

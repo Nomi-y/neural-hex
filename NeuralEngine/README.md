@@ -18,9 +18,11 @@ Standard AlphaZero loop, sized for "a couple of hours" of compute:
 
 1. **Self-play** — the current *best* network plays games against itself; PUCT MCTS (policy priors +
    value estimate, Dirichlet root noise, temperature) produces a search policy at each move. Every
-   position is stored as `(planes, MCTS policy, eventual result)`.
+   position is stored as `(planes, MCTS policy, eventual result)`. Every game plays to the last stone
+   (no early resignation — all data is used).
 2. **Train** — the network learns to predict the MCTS policy (cross-entropy) and the game result
-   (value MSE) from a replay buffer of recent games.
+   (value MSE) from a replay buffer of recent games. Uses **AMP mixed precision** and
+   **torch.compile** on CUDA for fast training.
 3. **Arena gate** — the freshly trained network only becomes the new *best* (and thus the self-play
    generator) if it beats the incumbent over a set of games. This is the "reward-based evolution".
 4. Repeat until the time budget elapses, checkpointing throughout.
@@ -51,14 +53,15 @@ are game-theoretically identical, so the trained engine swaps correctly against 
 | Path | Role |
 |---|---|
 | `config.py` | Every hyperparameter; auto-detects CUDA/MPS/CPU and worker count. |
+| `hyperparams.toml` | Single source of truth for all settings + hardware presets. |
 | `hex/board.py` | 13×13 rules — adjacency, win detection, swap, action space (169 cells + swap). |
 | `hex/bridges.py` | Bridge patterns, forced responses, virtual-connection check. |
 | `hex/solver.py` | Bounded exact endgame solver (alpha-beta + transposition table). |
 | `net/encoding.py` | Canonical board→planes and the canonical↔real action mapping. |
-| `net/model.py` | Residual ConvNet with policy (170) + value heads. |
-| `net/evaluator.py` | Batched network inference for MCTS. |
-| `search/mcts.py` | PUCT MCTS — batched across games, terminal/solver-aware. |
-| `train/selfplay.py` | Parallel batched self-play; GPU single-actor or CPU all-cores. |
+| `net/model.py` | Residual ConvNet with policy + value heads. |
+| `net/evaluator.py` | Batched network inference for MCTS (softmax on GPU). |
+| `search/mcts.py` | PUCT MCTS — batched across games, terminal/solver-aware, array-backed nodes. |
+| `train/selfplay.py` | Parallel batched self-play; GPU multi-process or CPU all-cores. |
 | `train/replay_buffer.py` | Replay buffer with 180° symmetry augmentation. |
 | `train/arena.py` | Candidate-vs-best gating matches. |
 | `train/train.py` | The training loop + checkpointing (`python -m train.train`). |
@@ -75,82 +78,98 @@ source .venv/bin/activate
 python smoke_test.py             # ~seconds; exercises every component on a 5×5 board
 ```
 
-Needs Python 3.10–3.12 (PyTorch wheels). The code mirrors the backend rules but has no other coupling.
+Needs Python 3.10–3.14 (PyTorch wheels). The code mirrors the backend rules but has no other coupling.
 
-## Train on a VPS
+## Train with Docker (recommended)
+
+The container bakes in `hyperparams.toml` (your config) and handles torch install (CPU or CUDA).
 
 ```bash
-# 1. copy the project (model checkpoints are not needed — training creates them)
-scp -r NeuralEngine user@vps:~/NeuralEngine
+# Build with a hardware preset baked in:
+./build_container.sh --preset cuda-balanced --cuda
 
-# 2. on the VPS
-cd ~/NeuralEngine && ./setup.sh                         # GPU: install the CUDA torch build
-source .venv/bin/activate && python smoke_test.py       # verify
-./run_training.sh                                       # pick a preset (or: ./run_training.sh 5)
+# Or for a top-end VPS GPU:
+./build_container.sh --preset cuda-moon --cuda
+
+# Run (CPU):
+mkdir -p checkpoints logs
+docker run -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
+
+# Run (GPU):
+docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
+
+# Resume stopped training — same command. Checkpoints and logs persist in bind mounts.
+# Override a setting:  docker run -e TRAIN_HOURS=12 ... neuralengine
+```
+
+The container auto-detects docker vs podman. Logs are written to both stdout and the `logs/`
+directory (one file per run, timestamped) so you can review all generations later.
+
+## Train bare-metal (without Docker)
+
+```bash
+source .venv/bin/activate
+./run_training.sh                # pick a preset (or: ./run_training.sh 5)
 #   (run under tmux/nohup so it survives logout)
 ```
 
-`run_training.sh` is a **preset chooser** — pick by number (or pass it as an argument). Each preset
-pins its device and sizes the net/sims/budget for a hardware class, and every knob can still be
-overridden from the environment (`TRAIN_HOURS=2 ./run_training.sh 5`):
+`run_training.sh` has two modes:
+1. **TOML mode** (default): reads `hyperparams.toml` directly.
+2. **Preset mode** (explicit number): overrides via env vars.
 
-| # | Target | Notes |
-|---|--------|-------|
-| 1 | Personal computer (no GPU) — smoke run | tiny net, minutes/gen; verifies the pipeline only. |
-| 2 | Personal computer (no GPU) — local check | sanity-check loss/arena before renting a box. |
-| 3 | CPU VPS — balanced (all cores) | a real but modest engine. |
-| 4 | CPU VPS — strong (all cores) | bigger net for a long run on a many-core box. |
-| 5 | CUDA VPS — balanced **96×8** | matches the default net, so it **resumes** existing checkpoints. |
-| 6 | CUDA VPS — large 128×10 | higher ceiling; the bigger net **can't** resume a 96×8 checkpoint. |
-| 7 | CUDA VPS — **Moon** 160×16 | saturate a top-end card (A100/H100/RTX PRO 6000); big net + 8192 games/gen. |
+## Hardware presets
 
-Presets pin `DEVICE` explicitly (CPU presets always run on CPU even where a GPU exists; CUDA presets
-fail loudly with no GPU rather than crawling on CPU). Changing the **net size** between runs means an
-existing `checkpoints/latest.pt` can't be loaded — it starts fresh, so move `checkpoints/` aside first.
+Presets are defined in `hyperparams.toml` and can be applied at build time:
 
-### Saturating the GPU (the whole loop, not just training)
+| Preset | Description |
+|---|---|
+| `smoke` | Tiny 32×4 net, 60 sims, CPU — verify the pipeline in seconds. |
+| `cpu-balanced` | 64×6 net, 200 sims, all CPU cores — real engine on a many-core box. |
+| `cuda-balanced` | 96×8 net, 250 sims — fits ~6-8 GB VRAM (RTX 3060/4060, T4). |
+| `cuda-large` | 128×10 net, 400 sims — RTX 4090 / A10 class. |
+| `cuda-moon` | 160×16 net, 600 sims — saturate an A100/H100/RTX PRO 6000. |
 
-A single Python actor can't feed a fast GPU — MCTS tree work is GIL-bound, so the card sits idle
-waiting on one core. So **self-play *and* arena fan out across many worker processes** (≈ one per CPU
-core, `NUM_ACTORS`), each batching its own games and holding its own copy of the (small) net on the
-**shared** GPU. Their NN batches interleave on the card; the training phase already runs one big
-batched net on the GPU. Net effect: every core does tree work in parallel while the GPU stays fed
-through all three phases.
+> The **cuda-balanced** preset uses the same net size as the default TOML, so it can resume
+> existing checkpoints. Other presets start fresh.
 
-- **Use the Moon preset (7)** on an A100/H100/RTX PRO 6000: a big net makes each forward substantial,
-  and 8192 games/gen split into `parallel_games`-sized batches across every core keeps the card busy.
-- **Enable CUDA MPS** for true concurrent kernels from the workers (otherwise the GPU time-slices them,
-  which already helps but isn't as tight):
-  ```bash
-  nvidia-cuda-mps-control -d        # start the MPS daemon once, before training
-  ```
-- **Verify it's actually saturated:** `watch -n1 nvidia-smi`. If GPU-Util isn't high, the net is too
-  small for the card (raise `NET_CHANNELS/BLOCKS`) or there aren't enough games in flight (raise
-  `GAMES_PER_GEN` / `PARALLEL_GAMES`). For a small net, a cheaper GPU usually wins on samples-per-dollar
-  — the top-end cards pay off mainly when you scale the **model** up.
+## CUDA performance features
 
-It resumes from `checkpoints/latest.pt` if restarted, and the deployable model is always
-`checkpoints/best.pt`. The log is **timestamped** — every line carries the wall-clock time and the
-offset since the run started, `[14:05:01 +0:03:12] …` — and reports each phase as it happens:
-per-chunk self-play progress (`done/total, /s`), periodic `train` step losses, arena progress and
-win-rate, `PROMOTED`/`kept`, per-gen time, and an `elapsed`/`remaining (~N more gens)` ETA.
+The training loop automatically enables these on CUDA (no config needed):
 
-### Key knobs (env vars → `config.py`)
+- **cuDNN auto-tuner** (`benchmark=True`) — picks the fastest convolution algorithm for your GPU.
+- **TF32** — uses TensorFloat32 on Ampere+ GPUs for faster matmuls.
+- **AMP mixed precision** — fp16 where safe, ~1.5–2× faster training steps, less VRAM.
+- **torch.compile** — JIT-compiles the network into fused CUDA kernels (~20–50% faster forward pass).
+- **Non-blocking transfers** — async CPU→GPU data movement (overlaps compute with transfer).
+- **MCTS Node arrays** — fixed-size arrays instead of Python dicts for faster selection/backup.
+- **GPU softmax** — evaluator keeps softmax on GPU instead of a Python loop.
+- **Work-stealing chunks** — 2–3× more self-play chunks than workers so fast cores grab extra work.
 
-| Var | Default | Meaning |
+For maximum GPU saturation, enable CUDA MPS before starting training:
+```bash
+nvidia-cuda-mps-control -d
+```
+
+## Key configuration (hyperparams.toml)
+
+| Setting | Default | Meaning |
 |---|---|---|
-| `TRAIN_HOURS` | 4 | Wall-clock training budget. |
-| `DEVICE` | auto | `cuda` / `mps` / `cpu`. |
-| `NUM_ACTORS` | auto | Self-play/arena worker processes (CUDA **and** CPU: cores−1; MPS: 1). |
-| `MCTS_SIMS` | 200 | Simulations per self-play move (strength vs speed). |
-| `PARALLEL_GAMES` | 64 | Games batched together per worker (per-process GPU batch size). |
-| `GAMES_PER_GEN` | 256 | Self-play games per generation. |
-| `NET_CHANNELS` / `NET_BLOCKS` | 96 / 8 | Network width / depth. |
-| `BATCH_SIZE` / `TRAIN_STEPS` | 512 / 400 | Optimiser batch and steps per generation. |
-| `ARENA_GAMES` / `ARENA_WIN_RATE` | 40 / 0.55 | Gating match size / promotion threshold. |
-| `SOLVER_EMPTIES` | 7 | Run the exact solver at ≤ this many empty cells. |
+| `game.board_size` | 13 | Board size (changing requires a fresh start). |
+| `net.channels` / `net.blocks` | 96 / 8 | Network width / depth. |
+| `mcts.simulations` | 250 | Simulations per self-play move. |
+| `selfplay.parallel_games` | 32 | Games batched per GPU forward pass. |
+| `train.hours` | 48 | Wall-clock training budget. |
+| `train.games_per_generation` | 256 | Self-play games per generation. |
+| `train.batch_size` | 512 | Training batch size. |
+| `train.train_steps_per_generation` | 500 | Optimizer steps per generation. |
+| `train.learning_rate` | 0.001 | Initial learning rate (Adam). |
+| `train.lr_schedule` | cosine | cosine / step / constant. |
+| `train.arena_games` / `arena_win_rate` | 64 / 0.55 | Gating match size / promotion threshold. |
+| `train.save_every_checkpoint` | false | Save each gen as `checkpoints/gen_NNNN.pt`. |
+| `train.log_dir` | logs | Directory for persistent log files (bind-mount it). |
+| `mcts.solver_empty_threshold` | 7 | Run exact solver at ≤ this many empty cells. |
 
-Bigger box → raise `MCTS_SIMS`, `PARALLEL_GAMES`, `NET_CHANNELS/BLOCKS`, `GAMES_PER_GEN`.
+All values can be overridden at runtime with environment variables (e.g. `-e TRAIN_HOURS=12`).
 
 ## Deploy the trained engine against the backend
 
@@ -183,16 +202,17 @@ tune play strength, thinking time, and determinism.
 
 ## What a trained engine looks like (filesystem + behaviour)
 
-**On disk** — training writes only into `checkpoints/`:
+**On disk** — training writes into `checkpoints/` and `logs/`:
 
 - `best.pt` — the strongest network so far (what you deploy). A dict `{model, config, generation}`; a
   few MB to tens of MB depending on `NET_CHANNELS/BLOCKS`. **This is the whole "AI".**
 - `latest.pt` — the most recent network + optimizer + replay metadata, for resuming. Larger than
   `best.pt` (it also holds optimizer state).
-- `.gitignore` keeps the `.pt` files out of git (they're build artifacts).
+- `gen_NNNN.pt` — individual generation snapshots (only when `save_every_checkpoint = true`).
+- `logs/train_YYYYMMDD_HHMMSS.log` — timestamped training logs.
 
 There is no separate "weights folder" or dataset on disk — self-play data lives in memory in the replay
-buffer during the run. The console log is your training record (generations, losses, arena win-rates).
+buffer during the run. The console log and persisted log files are your training record.
 
 **In behaviour**, as it trains:
 

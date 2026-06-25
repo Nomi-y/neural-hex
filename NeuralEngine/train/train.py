@@ -4,7 +4,7 @@ Each generation:
   1. the *best* network generates self-play games (exploration via Dirichlet noise + temperature),
   2. the *current* network trains on a replay buffer of recent games (policy cross-entropy + value MSE),
   3. an arena gates promotion: the current network only becomes the new best if it beats the incumbent,
-  4. checkpoints are written (latest.pt always; best.pt on promotion).
+  4. checkpoints are written (latest.pt always; best.pt on promotion; gen_N.pt if save_every_checkpoint).
 
 The loop runs until the wall-clock budget (TRAIN_HOURS) elapses and can be stopped/resumed at any time;
 the deployed engine simply loads checkpoints/best.pt. Run via run_training.sh or `python -m train.train`.
@@ -17,6 +17,7 @@ import math
 import os
 import sys
 import time
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -33,6 +34,37 @@ from train.clock import log, set_start, offset_str
 
 LATEST = "latest.pt"
 BEST = "best.pt"
+
+
+def _setup_cuda() -> None:
+    """One-time CUDA performance knobs.  Safe to call even without a GPU."""
+    if not torch.cuda.is_available():
+        return
+    torch.backends.cudnn.benchmark = True
+    if hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
+        torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends.cudnn, 'allow_tf32'):
+        torch.backends.cudnn.allow_tf32 = True
+
+
+def _setup_log_file(cfg: Config) -> None:
+    """If log_dir is configured, tee all log output to a timestamped file there."""
+    if not cfg.train.log_dir:
+        return
+    os.makedirs(cfg.train.log_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(cfg.train.log_dir, f"train_{ts}.log")
+
+    import builtins
+    _orig_print = builtins.print
+
+    def tee_print(*args, **kwargs):
+        _orig_print(*args, **kwargs)
+        with open(log_path, "a") as f:
+            _orig_print(*args, file=f, **kwargs)
+
+    builtins.print = tee_print
+    log(f"[train] logging to {log_path}")
 
 
 def _save(path: str, payload: dict) -> None:
@@ -113,28 +145,28 @@ def _build_lr_scheduler(optimizer: torch.optim.Optimizer, cfg: Config, generatio
     return lambda step, _total: None
 
 
-# ── Weight statistics (extra logging) ────────────────────────────────────────
+# ── Weight statistics ────────────────────────────────────────────────────────
 
 def _weight_stats(net: torch.nn.Module) -> dict:
     """Collect mean/std of parameters and their gradients for observability."""
-    params = []
-    grads = []
+    w_mean, w_std = 0.0, 0.0
+    g_norm = 0.0
+    total = 0
+    g_sq = 0.0
     for p in net.parameters():
-        if p.requires_grad:
-            params.append(p.detach().float())
-            if p.grad is not None:
-                grads.append(p.grad.detach().float())
-    stats = {}
-    if params:
-        all_p = torch.cat([p.flatten() for p in params])
-        stats["w_mean"] = float(all_p.mean().item())
-        stats["w_std"] = float(all_p.std().item())
-    if grads:
-        all_g = torch.cat([g.flatten() for g in grads])
-        stats["g_mean"] = float(all_g.mean().item())
-        stats["g_std"] = float(all_g.std().item())
-        stats["g_norm"] = float(torch.norm(all_g).item())
-    return stats
+        if not p.requires_grad:
+            continue
+        w = p.detach().float()
+        w_mean += float(w.mean().item())
+        w_std += float(w.std().item())
+        total += 1
+        if p.grad is not None:
+            g_sq += float((p.grad.detach().float() ** 2).sum().item())
+    if total > 0:
+        w_mean /= total
+        w_std /= total
+    g_norm = math.sqrt(g_sq)
+    return {"w_mean": w_mean, "w_std": w_std, "g_norm": g_norm}
 
 
 # ── Config validation on resume ──────────────────────────────────────────────
@@ -171,28 +203,39 @@ def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.rand
 
     lr_step_fn = _build_lr_scheduler(optimizer, cfg, generation)
 
+    # AMP: mixed precision on CUDA gives ~1.5-2× training throughput for free.
+    use_amp = (device == "cuda")
+    scaler = torch.amp.GradScaler("cuda") if use_amp else None
+    amp_ctx = torch.amp.autocast("cuda") if use_amp else nullcontext()
+
     for step in range(steps):
         lr_step_fn(step, steps)
 
         planes, pi, z = buffer.sample(cfg.train.batch_size, rng)
-        x = torch.from_numpy(planes).to(device)
-        target_pi = torch.from_numpy(pi).to(device)
-        target_v = torch.from_numpy(z).to(device)
+        x = torch.from_numpy(planes).to(device, non_blocking=True)
+        target_pi = torch.from_numpy(pi).to(device, non_blocking=True)
+        target_v = torch.from_numpy(z).to(device, non_blocking=True)
 
-        logits, value = net(x)
-        logp = F.log_softmax(logits, dim=1)
-        policy_loss = -(target_pi * logp).sum(dim=1).mean()
-        value_loss = F.mse_loss(value, target_v)
-        loss = policy_loss + cfg.train.value_loss_weight * value_loss
+        with amp_ctx:
+            logits, value = net(x)
+            logp = F.log_softmax(logits, dim=1)
+            policy_loss = -(target_pi * logp).sum(dim=1).mean()
+            value_loss = F.mse_loss(value, target_v)
+            loss = policy_loss + cfg.train.value_loss_weight * value_loss
 
         optimizer.zero_grad()
-        loss.backward()
-
-        # Gradient clipping
-        if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
-
-        optimizer.step()
+        if scaler:
+            scaler.scale(loss).backward()
+            if grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
+            optimizer.step()
 
         policy_losses.append(float(policy_loss.item()))
         value_losses.append(float(value_loss.item()))
@@ -204,11 +247,13 @@ def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.rand
             avg_ploss = float(np.mean(policy_losses[-recent:]))
             avg_vloss = float(np.mean(value_losses[-recent:]))
             lr = _get_lr(optimizer)
-            ws = _weight_stats(net)
             log(f"    train: step {step + 1}/{steps} ({rate:.0f}/s) "
-                f"lr={lr:.2e} ploss={avg_ploss:.3f} vloss={avg_vloss:.3f} "
-                f"|w|={ws.get('w_mean', 0):.4f}±{ws.get('w_std', 0):.4f} "
-                f"|g|={ws.get('g_norm', 0):.2f}")
+                f"lr={lr:.2e} ploss={avg_ploss:.3f} vloss={avg_vloss:.3f}")
+
+    # Weight stats computed once at the end, not per logging interval.
+    ws = _weight_stats(net)
+    log(f"    train: |w|={ws.get('w_mean', 0):.4f}±{ws.get('w_std', 0):.4f} "
+        f"|g|={ws.get('g_norm', 0):.2f}")
 
     return float(np.mean(policy_losses)), float(np.mean(value_losses)), float(np.mean(total_losses))
 
@@ -216,7 +261,11 @@ def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.rand
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    _setup_cuda()
+
     cfg = load()
+    _setup_log_file(cfg)
+
     os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
     torch.manual_seed(cfg.train.seed)
     np.random.seed(cfg.train.seed)
@@ -238,7 +287,7 @@ def main() -> None:
         f"dirichlet=({cfg.mcts.dirichlet_alpha},{cfg.mcts.dirichlet_epsilon})  "
         f"solver≤{cfg.mcts.solver_empty_threshold}  vc={cfg.mcts.use_virtual_connection}")
     log(f"  selfplay  = {cfg.selfplay.parallel_games} parallel  temp={cfg.selfplay.temperature}({cfg.selfplay.temperature_moves} plies)  "
-        f"resign={cfg.selfplay.resign_threshold}@{cfg.selfplay.resign_min_ply}ply")
+        f"no-resign")
     log(f"  train     = {cfg.train.hours}h budget  {cfg.train.games_per_generation} games/gen  "
         f"{cfg.train.train_steps_per_generation} steps  batch={cfg.train.batch_size}  "
         f"buffer={cfg.train.replay_buffer_size}")
@@ -249,11 +298,24 @@ def main() -> None:
         f"threshold={cfg.train.arena_win_rate:.0%}")
     log(f"  actors    = {cfg.resolve_actors()}  seed={cfg.train.seed}")
     log(f"  checkpoint_dir = {cfg.train.checkpoint_dir}")
+    log(f"  save_every_ckpt = {cfg.train.save_every_checkpoint}")
+    log(f"  log_dir   = {cfg.train.log_dir or '(stdout only)'}")
     log("=" * 60)
 
     net = build_net(cfg).to(device)
     total_params = sum(p.numel() for p in net.parameters())
     log(f"  model parameters: {total_params:,}")
+
+    # torch.compile on CUDA: JIT-compiles the network into fused kernels.
+    # Uses "reduce-overhead" mode for training (amortizes compilation overhead
+    # across many forward/backward passes).  MPS / CPU stay eager.
+    use_compile = (device == "cuda")
+    if use_compile:
+        try:
+            net = torch.compile(net, mode="reduce-overhead")
+            log(f"  torch.compile: enabled (reduce-overhead)")
+        except Exception as e:
+            log(f"  torch.compile: skipped ({e})")
 
     optimizer = torch.optim.Adam(net.parameters(), lr=cfg.train.learning_rate,
                                   weight_decay=cfg.train.weight_decay)
@@ -360,6 +422,15 @@ def main() -> None:
                 "config": _config_summary(cfg),
                 "buffer": buffer.state_dict(),
             })
+
+            # Save a generation snapshot if configured.
+            if cfg.train.save_every_checkpoint:
+                gen_path = os.path.join(cfg.train.checkpoint_dir, f"gen_{generation:04d}.pt")
+                _save(gen_path, {
+                    "model": net.state_dict(),
+                    "config": _config_summary(cfg),
+                    "generation": generation,
+                })
 
             # ── Generation summary ───────────────────────────────────────
             gen_dt = time.time() - gen_start

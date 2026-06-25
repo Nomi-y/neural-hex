@@ -195,7 +195,8 @@ show('selfplay', ['parallel_games', 'temperature_moves', 'resign_threshold'])
 show('train', ['hours', 'games_per_generation', 'batch_size', 'train_steps_per_generation',
                'learning_rate', 'lr_schedule', 'lr_min', 'lr_warmup_steps', 'grad_clip',
                'weight_decay', 'value_loss_weight', 'arena_games', 'arena_win_rate',
-               'arena_simulations', 'replay_buffer_size', 'num_actors', 'seed'])
+               'arena_simulations', 'replay_buffer_size', 'num_actors', 'seed',
+               'save_every_checkpoint', 'log_dir'])
 device = data.get('device', '(auto-detect)')
 print(f'  device = {device}')
 "
@@ -210,19 +211,30 @@ fi
 
 CONTAINERFILE="Containerfile"
 
+# Auto-detect container runtime: prefer podman, fall back to docker.
+CONTAINER_CMD="podman"
+if ! command -v podman &>/dev/null; then
+  if command -v docker &>/dev/null; then
+    CONTAINER_CMD="docker"
+  else
+    echo "ERROR: Neither podman nor docker found.  Install one of them." >&2
+    exit 1
+  fi
+fi
+
 # Build args
 BUILD_ARGS=""
 if $CUDA; then
-  BUILD_ARGS="$BUILD_ARGS --build-arg CUDA_INDEX=https://download.pytorch.org/whl/cu121"
+  BUILD_ARGS="$BUILD_ARGS --build-arg CUDA_BUILD=true"
 fi
 
-echo "=== Building image: $IMAGE ==="
+echo "=== Building image: $IMAGE  (using $CONTAINER_CMD) ==="
 echo
 echo "This will take a few minutes (mostly downloading PyTorch)."
 echo "The smoke test runs inside the build to catch issues early."
 echo
 
-podman build \
+$CONTAINER_CMD build \
   $BUILD_ARGS \
   -t "$IMAGE" \
   -f "$CONTAINERFILE" \
@@ -234,16 +246,20 @@ echo
 echo "Image:  $IMAGE"
 echo
 echo "To start training (CPU):"
-echo "  mkdir -p checkpoints"
-echo "  podman run -v ./checkpoints:/app/checkpoints $IMAGE"
+echo "  mkdir -p checkpoints logs"
+echo "  $CONTAINER_CMD run -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs $IMAGE"
 echo
 echo "To start training (GPU):"
-echo "  mkdir -p checkpoints"
-echo "  podman run --device nvidia.com/gpu=all -v ./checkpoints:/app/checkpoints $IMAGE"
+echo "  mkdir -p checkpoints logs"
+if [ "$CONTAINER_CMD" = "docker" ]; then
+  echo "  $CONTAINER_CMD run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs $IMAGE"
+else
+  echo "  $CONTAINER_CMD run --device nvidia.com/gpu=all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs $IMAGE"
+fi
 echo
 echo "To resume stopped training, run the same command — checkpoints persist."
-echo "To override a setting at runtime:  podman run -e TRAIN_HOURS=12 ... $IMAGE"
+echo "To override a setting at runtime:  $CONTAINER_CMD run -e TRAIN_HOURS=12 ... $IMAGE"
 echo "To monitor GPU usage:              watch -n1 nvidia-smi"
 echo
-echo "Logs can be piped:  podman run ... $IMAGE 2>&1 | tee train.log"
+echo "Logs can be piped:  $CONTAINER_CMD run ... $IMAGE 2>&1 | tee train.log"
 echo "Summary from logs:  ./training_summary.sh -f train.log"

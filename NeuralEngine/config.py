@@ -187,6 +187,8 @@ class TrainConfig:
 
     checkpoint_dir: str = _env_str("CHECKPOINT_DIR",
         os.path.join(os.path.dirname(__file__), "checkpoints"), "train.checkpoint_dir")
+    save_every_checkpoint: bool = _env_bool("SAVE_EVERY_CKPT", False, "train.save_every_checkpoint")
+    log_dir: str = _env_str("LOG_DIR", "logs", "train.log_dir")
     seed: int = _env_int("SEED", 0, "train.seed")
 
 

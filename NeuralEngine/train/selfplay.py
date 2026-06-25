@@ -2,8 +2,8 @@
 
 Plays many games in parallel with batched MCTS, recording (canonical planes, canonical MCTS policy,
 side-to-move) at every position; once a game ends, each record is labelled with z = +1/-1 for whether
-that side went on to win. Early plies are sampled with temperature for exploration, later plies played
-greedily. A clearly lost game may resign early to save compute.
+that side went on to win.  Early plies are sampled with temperature for exploration, later plies played
+greedily.  Every game plays to the last stone — no early resignation.
 
 `generate()` runs in-process on a GPU/MPS device (one big batched actor saturates it) or fans out across
 all CPU cores (one process per core) when there is no accelerator — the "use all resources" requirement.
@@ -68,14 +68,6 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
             temperature = cfg.selfplay.temperature if g.ply < cfg.selfplay.temperature_moves else 0.0
             action = mcts.select_action(root, num_actions, temperature, rng)
 
-            # Optional early resignation: if the search thinks the side to move is lost, concede.
-            root_value = (sum(root.child_w.values()) / root.sum_n) if root.sum_n > 0 else 0.0
-            if (cfg.selfplay.resign_threshold < 0 and g.ply >= cfg.selfplay.resign_min_ply
-                    and root.solved_value is None and root_value < cfg.selfplay.resign_threshold):
-                g.done = True
-                g.winner = 3 - g.state.to_move  # the other colour (RED=1/BLUE=2)
-                continue
-
             g.state = g.state.play(action)
             g.ply += 1
             if g.state.is_terminal():
@@ -139,14 +131,14 @@ def split_evenly(total: int, parts: int) -> List[int]:
 def chunk_sizes(cfg: Config, num_games: int, actors: int) -> List[int]:
     """Per-task game counts, tuned per device.
 
-    GPU: enough chunks that (a) every worker gets work (>= actors) and (b) no chunk exceeds
-    parallel_games, the VRAM-bounded batch the card should see per forward. All GPU workers run at ~equal
-    speed, so a near-even split (≈ one chunk each) finishes together — no straggler tail to chase, unlike
-    CPU. CPU: many small chunks so fast cores keep grabbing work instead of idling behind a slow one;
-    batch size is irrelevant there (the net runs one sample at a time on CPU regardless)."""
+    GPU: chunks sized to parallel_games (the optimal batch size for the GPU forward pass),
+    with 2-3× more chunks than workers so imap_unordered naturally balances — fast workers
+    grab extra chunks instead of idling behind a slow one.  CPU: many small chunks so fast
+    cores keep grabbing work; batch size is irrelevant there (the net runs one sample at a
+    time on CPU regardless)."""
     if cfg.device == "cuda":
-        by_batch = (num_games + cfg.selfplay.parallel_games - 1) // max(1, cfg.selfplay.parallel_games)
-        parts = max(actors, by_batch)
+        chunk = max(1, cfg.selfplay.parallel_games)
+        parts = max(actors * 2, (num_games + chunk - 1) // chunk)
         return split_evenly(num_games, parts)
     return split_evenly(num_games, actors * 4)
 

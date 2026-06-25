@@ -3,43 +3,43 @@
 # Build:  ./build_container.sh
 #         (reads hyperparams.toml, bakes it in, optionally applies a preset)
 #
-# Run (CPU):    podman run -v ./checkpoints:/app/checkpoints neuralengine
-# Run (GPU):    podman run --device nvidia.com/gpu=all -v ./checkpoints:/app/checkpoints neuralengine
+# Run (CPU):    docker run -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
+# Run (GPU):    docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
 #
 # The hyperparams.toml IS the configuration — edit it before building.
 # You can still override any value at runtime with -e, e.g.:
-#   podman run -e TRAIN_HOURS=12 -v ./checkpoints:/app/checkpoints neuralengine
+#   docker run -e TRAIN_HOURS=12 -v ./checkpoints:/app/checkpoints neuralengine
 #
-# Checkpoints land in /app/checkpoints/ — bind-mount this directory to persist them
-# across container restarts.
+# Checkpoints and logs land in bind-mounted directories so they persist across restarts.
 
 FROM docker.io/python:3.12-slim
 WORKDIR /app
 
-# System deps for PyTorch CUDA builds (libgomp is needed at runtime).
+# System deps for PyTorch (libgomp is needed at runtime).
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies.  For a GPU build, the CUDA torch wheel must be
-# installed — use the --cuda flag of build_container.sh or edit this file.
+# Install non-torch dependencies first (lightweight).
+# torch is installed separately below so we can choose CPU vs CUDA.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir numpy websockets
 
-# ── If you need a CUDA torch wheel, uncomment and adjust the index URL ──────
-# ARG CUDA_INDEX="https://download.pytorch.org/whl/cu121"
-# RUN pip install --no-cache-dir --force-reinstall torch --index-url "${CUDA_INDEX}"
+# ── Torch installation ───────────────────────────────────────────────────────
+# Default: CPU-only torch (--index-url cpu).  With --cuda, install the default
+# PyPI torch wheel which already bundles the right CUDA libraries for the host.
+ARG CUDA_BUILD="false"
+RUN if [ "${CUDA_BUILD}" = "true" ]; then \
+      pip install --no-cache-dir --default-timeout=600 torch; \
+    else \
+      pip install --no-cache-dir --default-timeout=600 torch --index-url https://download.pytorch.org/whl/cpu; \
+    fi
 
 # Copy the project source *after* pip so code changes don't reinstall deps.
 COPY . .
-
-# The hyperparams.toml is the single source of truth for all training knobs.
-# It's read by config.py at startup.  Edit it locally, then rebuild.
-# (already copied above via `COPY . .`)
 
 # Smoke-test the container build to catch config/code issues early.
 RUN python smoke_test.py
 
 # Default command: launch training directly (hyperparams.toml is the config).
-# To override settings at runtime: podman run -e TRAIN_HOURS=12 ... neuralengine
 CMD ["python", "-m", "train.train"]
