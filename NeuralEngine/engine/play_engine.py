@@ -67,7 +67,7 @@ def _color_to_stone(color: str) -> int:
 
 
 def load_engine(model_path: str, device: str):
-    ckpt = torch.load(model_path, map_location=device)
+    ckpt = torch.load(model_path, map_location=device, weights_only=False)
     c = ckpt["config"]
     net = HexNet(c["board_size"], c["in_planes"], c["channels"], c["blocks"], c["value_hidden"])
     net.load_state_dict(ckpt["model"])

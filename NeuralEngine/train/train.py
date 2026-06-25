@@ -266,7 +266,7 @@ def main() -> None:
 
     # ─── RESUME ──────────────────────────────────────────────────────────
     if os.path.exists(latest_path):
-        ckpt = torch.load(latest_path, map_location=device)
+        ckpt = torch.load(latest_path, map_location=device, weights_only=False)
         if not _validate_checkpoint_config(ckpt.get("config"), cfg):
             sys.exit(1)
 
