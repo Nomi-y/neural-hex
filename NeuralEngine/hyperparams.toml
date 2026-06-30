@@ -5,6 +5,11 @@
 #  built-in default (config.py). The env-var name is shown in [BRACKETS] on each
 #  line, e.g.  docker run -e TRAIN_HOURS=12 -e MCTS_SIMS=400 ...
 #
+#  Device & runtime-only knobs (no key in this file — env/build only; see README):
+#    DEVICE (cpu/cuda; auto-detected if unset) · ALLOW_CPU=1 (train on CPU even with a
+#    GPU present) · INFERENCE_SERVER (0/1, default on for CUDA) · INFERENCE_MAX_BATCH ·
+#    SELFPLAY_DEVICE.  CUDA_WHEEL is a BUILD arg (cu121 default; cu128 for Blackwell/5090).
+#
 #  NOTE: applying a preset in place (build_container.sh --preset, or the CI
 #  image build) REWRITES this file and STRIPS these comments. They live in
 #  version control — edit the committed copy; the build-time rewrite is
@@ -55,8 +60,9 @@ solver_empty_threshold = 7
 solver_node_budget = 200_000
 # [USE_VC] Bridge / virtual-connection heuristic: treats intact bridges as connections to give an
 # early win/loss signal (a "safe connection until disturbed"). Strong but CPU-heavy (~half the tree
-# cost). Keep ON for the engine (strength); turn OFF for training (throughput — the idle GPU just
-# evaluates those leaves instead). The deployed engine forces it on regardless of this value.
+# cost). Keep ON for the engine (strength); turn OFF for training (throughput — it's pure CPU cost,
+# and the GPU inference server evaluates those leaves cheaply anyway). The deployed engine forces it
+# on regardless of this value.
 use_virtual_connection = true
 # [FPU] First-Play-Urgency: value assumed for not-yet-visited children = node value − this, so search
 # exploits the policy's best moves before fanning out. 0 disables (legacy: unvisited = 0). Try 0.1–0.5.

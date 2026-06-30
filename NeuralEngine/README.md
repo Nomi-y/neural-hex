@@ -1,12 +1,13 @@
 # NeuralEngine — a self-training Hex engine (AlphaZero-style) 
 
 A neural-network Hex engine that trains itself by self-play and plugs into the main backend as an
-**external engine** (it both plays and analyses), following `../Backend/Engines.md`. Fixed **13×13**.
+**external engine** (it both plays and analyses), following `../Backend/Engines.md`. Default **13×13**,
+configurable via `BOARD_SIZE` (the `cuda-affordable-11` / `cuda-5090` presets train **11×11**).
 
 It is self-contained: it does **not** run the main stack. It reuses the backend's *rules* (a faithful
 Python port of `HexBoard` / `WinDetection` / the swap rule) and the backend's *engine protocol* (one
-WebSocket, `MakeMove`/`Swap` and `AnalyzeRequest`/`AnalysisResult`), but training is its own process so
-it can be scp'd to a beefier box and run there.
+WebSocket, `MakeMove`/`Swap` and `AnalyzeRequest`/`AnalysisResult`), but training is its own process,
+packaged as a container image you run on a rented GPU box (e.g. RunPod) — see *Train with Docker* below.
 
 > Python conventions: this subproject is idiomatic PyTorch/Python (snake_case, PEP8), not the TS app's
 > PascalCase — the project conventions describe the TypeScript codebase. The Hex *rules* here mirror the
@@ -54,19 +55,21 @@ are game-theoretically identical, so the trained engine swaps correctly against 
 |---|---|
 | `config.py` | Every hyperparameter; auto-detects CUDA/MPS/CPU and worker count. |
 | `hyperparams.toml` | Single source of truth for all settings + hardware presets. |
-| `hex/board.py` | 13×13 rules — adjacency, win detection, swap, action space (169 cells + swap). |
+| `hex/board.py` | N×N rules — adjacency, win detection, swap, action space (N² cells + swap). |
 | `hex/bridges.py` | Bridge patterns, forced responses, virtual-connection check. |
 | `hex/solver.py` | Bounded exact endgame solver (alpha-beta + transposition table). |
 | `net/encoding.py` | Canonical board→planes and the canonical↔real action mapping. |
 | `net/model.py` | Residual ConvNet with policy + value heads. |
 | `net/evaluator.py` | Batched network inference for MCTS (softmax on GPU). |
 | `search/mcts.py` | PUCT MCTS — batched across games, terminal/solver-aware, array-backed nodes. |
-| `train/selfplay.py` | Parallel batched self-play; GPU multi-process or CPU all-cores. |
+| `train/selfplay.py` | Parallel batched self-play; CPU search workers + GPU inference server, or CPU all-cores. |
+| `train/inference_server.py` | Single-GPU batched inference server + `RemoteEvaluator` (CPU workers, one CUDA context). |
 | `train/replay_buffer.py` | Replay buffer with 180° symmetry augmentation. |
 | `train/arena.py` | Candidate-vs-best gating matches. |
 | `train/train.py` | The training loop + checkpointing (`python -m train.train`). |
 | `engine/play_engine.py` | The deployed external engine (play + analysis). |
-| `smoke_test.py` | Fast end-to-end check on a tiny board (also a container build guard). |
+| `smoke_test.py` | Fast end-to-end check (CPU, plus the GPU paths when a CUDA device is present; also a build guard). |
+| `test_inference_server.py` | Asserts the inference server == a local evaluator (also a build guard). |
 
 ## Run the tests locally (optional)
 
@@ -116,6 +119,29 @@ docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neur
 The container auto-detects docker vs podman. Logs are written to both stdout and the `logs/`
 directory (one file per run, timestamped) so you can review all generations later.
 
+### CUDA wheel & startup safety
+
+Prebuilt images run on hosts whose driver you don't control (and on RunPod the driver can change
+between runs), so the wheel is pinned to the **GPU**, not the build host — and two guards stop a
+misbuilt image from silently wasting the GPU.
+
+**Pin the CUDA wheel.** A torch wheel bundles a CUDA runtime *and* a fixed set of GPU architectures; a
+wheel newer than the host driver falls back to CPU, and a wheel lacking the GPU's arch can't run a
+single kernel.
+
+- `CUDA_WHEEL` build arg (default **`cu121`**) runs on any modern driver via backward compatibility;
+  override with `build_container.sh --cuda-wheel <tag>` or the CI **`cuda_wheel`** input.
+- **Blackwell (RTX 5090/B200, sm_120) needs `cu128`** — the `cuda-5090` preset selects it automatically
+  (locally and in CI) unless you pass a wheel explicitly.
+
+**Two fail-loud startup guards** abort in seconds with a fix instead of crawling on CPU or crashing
+deep in self-play:
+
+- *Driver too old* — torch can't use the GPU → abort: rebuild with a lower `--cuda-wheel`.
+- *Arch unsupported* — `cuda.is_available()` is `True` but every kernel fails (e.g. `cu121` on a 5090);
+  a tiny probe conv catches it → abort: rebuild with `cu128`.
+- Set **`ALLOW_CPU=1`** (with `DEVICE=cpu`) to intentionally train on CPU and skip both.
+
 ## Deploy via GHCR (CI-built image)
 
 Instead of building locally and copying to the VPS, let GitHub Actions build the image and push
@@ -159,9 +185,12 @@ Presets are defined in `hyperparams.toml` and can be applied at build time:
 | `cuda-balanced` | 96×8 net, 250 sims — fits ~6-8 GB VRAM (RTX 3060/4060, T4). |
 | `cuda-large` | 128×10 net, 400 sims — RTX 4090 / A10 class. |
 | `cuda-moon` | 160×16 net, 600 sims — saturate an A100/H100/RTX PRO 6000. |
+| `cuda-affordable-11` | 96×8 net, 200 sims, **11×11** board — affordable ~24h run (RTX 6000 Ada / A6000 / A40). |
+| `cuda-5090` | 128×12 SE net, 256 sims, **11×11** — RTX 5090; auto-builds the **cu128** wheel (Blackwell sm_120). |
 
 > The **cuda-balanced** preset uses the same net size as the default TOML, so it can resume
-> existing checkpoints. Other presets start fresh.
+> existing checkpoints. Other presets start fresh. The `*-11` / `5090` presets train an **11×11**
+> board — register the deployed engine with `MinBoardSize`/`MaxBoardSize` 11 to match.
 
 ## CUDA performance features
 
@@ -196,6 +225,7 @@ Knobs (all env, so they work with baked images):
 |-----|---------|---------|
 | `INFERENCE_SERVER` | on for CUDA | `0`/`1` — GPU inference server vs per-worker CPU eval. |
 | `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server coalesces into one forward (bounds VRAM). |
+| `INFERENCE_RESULT_TIMEOUT` | 300 | Seconds a worker waits for a server result before erroring (dead-server guard). |
 | `SELFPLAY_DEVICE` | cpu (CUDA box) | Worker eval device when the server is **off**. |
 | `NUM_ACTORS` | cores − 1 | Self-play / arena worker processes. |
 
@@ -227,6 +257,7 @@ All values can be overridden at runtime with environment variables (e.g. `-e TRA
 
 ```bash
 # 1. register an external engine on the running backend (admin), with analysis enabled:
+#    (set Min/MaxBoardSize to the board you trained — e.g. 11 for the *-11 / cuda-5090 presets)
 curl -X POST http://<backend>/Admin/Api/Engines/External \
   -H "X-Admin-Session: <token>" -H "Content-Type: application/json" \
   -d '{ "Name": "NeuralHex", "MinBoardSize": 13, "MaxBoardSize": 13, "SupportsAnalysis": true }'
