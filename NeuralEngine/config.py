@@ -130,6 +130,7 @@ class NetConfig:
     blocks: int = _env_int("NET_BLOCKS", 8, "net.blocks")
     in_planes: int = 5  # derived, not user-tunable
     value_hidden: int = _env_int("NET_VALUE_HIDDEN", 128, "net.value_hidden")
+    use_se: bool = _env_bool("NET_SE", False, "net.use_se")  # squeeze-excitation blocks (board-wide context)
 
 
 @dataclass

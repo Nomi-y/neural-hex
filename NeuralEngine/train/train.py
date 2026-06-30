@@ -179,6 +179,7 @@ def _validate_checkpoint_config(ckpt_config: dict | None, cfg: Config) -> bool:
         ("board_size", cfg.game.board_size),
         ("channels", cfg.net.channels),
         ("blocks", cfg.net.blocks),
+        ("use_se", cfg.net.use_se),
     ]
     for key, current in checks:
         saved = ckpt_config.get(key)
@@ -470,6 +471,7 @@ def _config_summary(cfg: Config) -> dict:
         "channels": cfg.net.channels,
         "blocks": cfg.net.blocks,
         "value_hidden": cfg.net.value_hidden,
+        "use_se": cfg.net.use_se,
     }
 
 

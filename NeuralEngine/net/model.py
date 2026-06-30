@@ -14,23 +14,46 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class _SEBlock(nn.Module):
+    """Squeeze-and-excitation: global average pool -> 2-layer MLP -> per-channel gates in [0,1].
+
+    Injects board-wide context into every residual block. Valuable for Hex specifically, where a win is
+    a global edge-to-edge connection that a stack of local 3x3 convs only perceives slowly."""
+
+    def __init__(self, channels: int, reduction: int = 4) -> None:
+        super().__init__()
+        hidden = max(1, channels // reduction)
+        self.fc1 = nn.Linear(channels, hidden)
+        self.fc2 = nn.Linear(hidden, channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        s = x.mean(dim=(2, 3))                  # (B, C) global average pool
+        s = F.relu(self.fc1(s))
+        s = torch.sigmoid(self.fc2(s))
+        return x * s[:, :, None, None]
+
+
 class _ResidualBlock(nn.Module):
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, use_se: bool = False) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(channels)
         self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(channels)
+        self.se = _SEBlock(channels) if use_se else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.bn2(self.conv2(x))
+        if self.se is not None:
+            x = self.se(x)
         return F.relu(x + residual)
 
 
 class HexNet(nn.Module):
-    def __init__(self, board_size: int, in_planes: int, channels: int, blocks: int, value_hidden: int) -> None:
+    def __init__(self, board_size: int, in_planes: int, channels: int, blocks: int, value_hidden: int,
+                 use_se: bool = False) -> None:
         super().__init__()
         self.board_size = board_size
         self.num_actions = board_size * board_size + 1
@@ -40,7 +63,7 @@ class HexNet(nn.Module):
             nn.BatchNorm2d(channels),
             nn.ReLU(inplace=True),
         )
-        self.tower = nn.Sequential(*[_ResidualBlock(channels) for _ in range(blocks)])
+        self.tower = nn.Sequential(*[_ResidualBlock(channels, use_se) for _ in range(blocks)])
 
         # Policy head: 2 feature maps -> flat -> action logits (cells + swap).
         self.policy_conv = nn.Conv2d(channels, 2, 1, bias=False)
@@ -76,6 +99,7 @@ def build_net(cfg) -> HexNet:
         channels=cfg.net.channels,
         blocks=cfg.net.blocks,
         value_hidden=cfg.net.value_hidden,
+        use_se=cfg.net.use_se,
     )
 
 
