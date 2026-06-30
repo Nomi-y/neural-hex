@@ -76,6 +76,7 @@ backend_ws = "ws://localhost:3001"
   mcts = { simulations = 200 }
   selfplay = { parallel_games = 32 }
   train = { hours = 48.0, games_per_generation = 192, train_steps_per_generation = 400, batch_size = 384, arena_games = 48 }
+  device = "cpu"
 
 [presets.cuda-balanced]
   description = "CUDA GPU — balanced 96×8 (resume-compatible with default)"
@@ -83,6 +84,7 @@ backend_ws = "ws://localhost:3001"
   mcts = { simulations = 250 }
   selfplay = { parallel_games = 64 }
   train = { hours = 6.0, games_per_generation = 512, train_steps_per_generation = 500, batch_size = 512, arena_games = 64 }
+  device = "cuda"
 
 [presets.cuda-large]
   description = "CUDA GPU — large 128×10 (A10/RTX 4090 class)"
@@ -90,6 +92,7 @@ backend_ws = "ws://localhost:3001"
   mcts = { simulations = 400 }
   selfplay = { parallel_games = 128 }
   train = { hours = 12.0, games_per_generation = 1024, train_steps_per_generation = 700, batch_size = 768, arena_games = 80, arena_simulations = 160 }
+  device = "cuda"
 
 [presets.cuda-moon]
   description = "CUDA GPU — MOON 160×16 (saturate an A100/H100/RTX PRO 6000)"
@@ -97,6 +100,7 @@ backend_ws = "ws://localhost:3001"
   mcts = { simulations = 600 }
   selfplay = { parallel_games = 256 }
   train = { hours = 10.0, games_per_generation = 8192, train_steps_per_generation = 1200, batch_size = 4096, arena_games = 160, arena_simulations = 200 }
+  device = "cuda"
 
 [presets.cuda-affordable-11]
   description = "CUDA GPU — affordable 11×11 board (RTX 6000 Ada / A6000 / A40, ~$10-18 per 24h)"
@@ -104,4 +108,5 @@ backend_ws = "ws://localhost:3001"
   net = { channels = 96, blocks = 8 }
   mcts = { simulations = 200 }
   selfplay = { parallel_games = 128 }
-  train = { hours = 24.0, games_per_generation = 768, train_steps_per_generation = 400, batch_size = 512, arena_games = 48, arena_simulations = 100 }
+  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 400, batch_size = 512, arena_games = 48, arena_simulations = 100 }
+  device = "cuda"
