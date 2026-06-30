@@ -18,25 +18,63 @@ import time
 
 
 class _CpuReader:
-    """Tracks /proc/stat across calls; returns CPU fraction (0–1) on each call
-    after the first (which primes and returns None)."""
+    """Tracks CPU utilisation across calls. Prefers cgroup v2 cpu.stat (container-scoped,
+    matches the pod dashboard) and falls back to /proc/stat (namespaced on modern kernels,
+    host-scoped on older ones)."""
 
     def __init__(self) -> None:
-        self._prev: list[int] | None = None
+        self._prev_ts: float | None = None
+        self._prev_usec: int | None = None
+        self._prev_proc: list[int] | None = None
+        self._num_cpus: int | None = None
+        # Try cgroup v2 first
+        self._cg_stat_path = "/sys/fs/cgroup/cpu.stat"
+        self._use_cgroup = os.path.exists(self._cg_stat_path)
+
+    def _read_cgroup_usec(self) -> int | None:
+        try:
+            with open(self._cg_stat_path) as f:
+                for line in f:
+                    if line.startswith("usage_usec "):
+                        return int(line.split()[1])
+        except Exception:
+            pass
+        return None
 
     def sample(self) -> float | None:
+        if self._use_cgroup:
+            now = time.time()
+            usec = self._read_cgroup_usec()
+            if usec is not None and self._prev_usec is not None and self._prev_ts is not None:
+                dt = now - self._prev_ts
+                du = usec - self._prev_usec
+                self._prev_ts, self._prev_usec = now, usec
+                if dt > 0 and du >= 0:
+                    if self._num_cpus is None:
+                        try:
+                            self._num_cpus = len(os.sched_getaffinity(0))
+                        except (AttributeError, OSError):
+                            self._num_cpus = max(1, os.cpu_count() or 1)
+                    # usage_usec counts across all CPUs => fraction = cores_used / num_cpus
+                    cores = du / (dt * 1_000_000)
+                    return min(1.0, cores / self._num_cpus)
+            else:
+                self._prev_ts, self._prev_usec = now, usec
+                return None
+
+        # Fallback: /proc/stat
         try:
             with open("/proc/stat") as f:
                 fields = f.readline().split()
             if fields[0] != "cpu":
                 return None
             curr = [int(x) for x in fields[1:]]
-            if self._prev is None:
-                self._prev = curr
+            if self._prev_proc is None:
+                self._prev_proc = curr
                 return None
-            idle_delta = curr[3] - self._prev[3]
-            total_delta = sum(curr) - sum(self._prev)
-            self._prev = curr
+            idle_delta = curr[3] - self._prev_proc[3]
+            total_delta = sum(curr) - sum(self._prev_proc)
+            self._prev_proc = curr
             if total_delta <= 0:
                 return None
             return 1.0 - idle_delta / total_delta
@@ -68,7 +106,41 @@ def _sample_gpu() -> dict | None:
 
 
 def _sample_ram() -> dict | None:
-    """Returns {ram_used_pct, ram_total_gb} or None on failure."""
+    """Returns {ram_used_pct, ram_total_gb} from cgroup memory stats (container-scoped,
+    matches the pod dashboard). Falls back to /proc/meminfo (host-scoped, inaccurate in
+    containers) when cgroup files are unavailable."""
+    # ── cgroup v2 ──
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            used_bytes = int(f.read().strip())
+        with open("/sys/fs/cgroup/memory.max") as f:
+            raw = f.read().strip()
+        if raw != "max":
+            total_bytes = int(raw)
+            if total_bytes > 0 and used_bytes >= 0:
+                return {
+                    "ram_total_gb": total_bytes / (1024 ** 3),
+                    "ram_used_pct": used_bytes / total_bytes,
+                }
+    except (OSError, ValueError):
+        pass
+
+    # ── cgroup v1 ──
+    try:
+        with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:
+            used_bytes = int(f.read().strip())
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
+            total_bytes = int(f.read().strip())
+        # A limit near LONG_MAX (~9 EiB) means "unlimited"; treat as host RAM.
+        if total_bytes > 0 and total_bytes < (1 << 50) and used_bytes >= 0:
+            return {
+                "ram_total_gb": total_bytes / (1024 ** 3),
+                "ram_used_pct": used_bytes / total_bytes,
+            }
+    except (OSError, ValueError):
+        pass
+
+    # ── Fallback: /proc/meminfo (host view, inaccurate in containers) ──
     try:
         with open("/proc/meminfo") as f:
             mem = {}
