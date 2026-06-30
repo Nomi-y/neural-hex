@@ -1,66 +1,174 @@
 # ============================================================================
 #  NeuralEngine — Hyperparameters (single source of truth)
 # ============================================================================
+#  Resolution order for every value:  environment variable  >  this file  >
+#  built-in default (config.py). The env-var name is shown in [BRACKETS] on each
+#  line, e.g.  docker run -e TRAIN_HOURS=12 -e MCTS_SIMS=400 ...
+#
+#  NOTE: applying a preset in place (build_container.sh --preset, or the CI
+#  image build) REWRITES this file and STRIPS these comments. They live in
+#  version control — edit the committed copy; the build-time rewrite is
+#  throwaway. The [presets.*] blocks at the bottom override the base values.
+# ============================================================================
+
 [game]
+# [BOARD_SIZE] Board is N×N. Hex is a first-player win (mitigated by swap_rule below).
+# Difficulty/cost grow fast with N. Common here: 11 or 13 (up to 19 in theory).
+# Changing N is a fresh start — the network and checkpoints are board-size-specific.
 board_size = 13
+# [SWAP_RULE] Pie rule: the 2nd player may, on their first turn ONLY, steal the opening
+# move. Standard competitive Hex; keep true — it offsets the large first-move advantage.
 swap_rule = true
 
 [net]
+# Residual conv tower (AlphaZero-style): stem -> `blocks` residual blocks -> policy & value heads.
+# [NET_CHANNELS] Width (feature maps per conv) — the main strength/cost knob. Cost ≈ channels².
+# 32 (smoke) · 64–96 (CPU / small GPU) · 128–256 (big GPU).
 channels = 96
+# [NET_BLOCKS] Depth (residual blocks). Deeper = larger receptive field, which matters for
+# board-spanning connections. 2 (smoke) · 6–10 (typical) · 12–20 (large GPU).
 blocks = 8
+# [NET_VALUE_HIDDEN] Hidden units in the value-head MLP. 64–256; 128 is fine. Minor impact.
 value_hidden = 128
+# [NET_SE] Squeeze-excitation blocks (global average-pool gate per block → board-wide context;
+# helps Hex connection reading). false default; true adds ~5% params. Toggling it is a fresh start.
+use_se = false
 
 [mcts]
+# [MCTS_SIMS] Tree-search simulations per move during self-play — the biggest strength↔speed
+# lever (cost ≈ linear, and self-play is CPU-bound). 60 (smoke) · 200–400 (typical) · 600–800 (strong).
 simulations = 250
+# [C_PUCT] PUCT exploration constant: higher trusts the policy prior longer (more exploration),
+# lower exploits visit counts sooner. Typical 1.0–2.5; 1.5 is a solid default.
 c_puct = 1.5
+# [DIRICHLET_ALPHA] Concentration of root Dirichlet noise (forces opening exploration in self-play).
+# Rule of thumb ≈ 10 / avg_legal_moves: ~0.03 (Go 19×19), ~0.15–0.30 (Hex 11–13). Lower = peakier.
 dirichlet_alpha = 0.15
+# [DIRICHLET_EPS] Fraction of the root prior replaced by that noise. ~0.25 standard (0.2–0.35).
+# 0 = no exploration noise (don't, for self-play; it's what diversifies games).
 dirichlet_epsilon = 0.30
+# [SOLVER_EMPTIES] Run the EXACT endgame solver once ≤ this many empty cells remain → perfect ±1
+# labels near the end. 0 disables. 6–10 typical; CPU cost climbs fast as the count rises.
 solver_empty_threshold = 7
+# [SOLVER_NODES] Max nodes the exact solver may expand on a position before giving up. 100k–500k.
+# Higher solves more endgames but can stall (the per-phase watchdog still bounds wall time).
 solver_node_budget = 200_000
+# [USE_VC] Bridge / virtual-connection heuristic: treats intact bridges as connections to give an
+# early win/loss signal (a "safe connection until disturbed"). Strong but CPU-heavy (~half the tree
+# cost). Keep ON for the engine (strength); turn OFF for training (throughput — the idle GPU just
+# evaluates those leaves instead). The deployed engine forces it on regardless of this value.
 use_virtual_connection = true
+# [FPU] First-Play-Urgency: value assumed for not-yet-visited children = node value − this, so search
+# exploits the policy's best moves before fanning out. 0 disables (legacy: unvisited = 0). Try 0.1–0.5.
+fpu_reduction = 0.0
+# [REUSE_TREE] Carry the MCTS subtree under the played move into the next move's search (self-play),
+# so accumulated visits aren't thrown away → more effective search per move. Costs a little memory.
+reuse_tree = false
 
 [selfplay]
+# [PARALLEL_GAMES] Games batched per network forward pass (per worker) — bigger = better GPU
+# utilisation and more VRAM. 16 (smoke) · 32–128 · 256+ (big GPU). Note the effective per-worker
+# batch is also capped by games_per_generation / (2 × actors), so raise games_per_generation too.
 parallel_games = 32
+# [TEMPERATURE_MOVES] Number of opening plies sampled WITH temperature (for opening variety) before
+# the game switches to greedy (most-visited) play. ~10–30; scale roughly with board size.
 temperature_moves = 20
+# [TEMPERATURE] Sampling temperature during those opening plies (move ∝ visit_count^(1/T)).
+# 1.0 = proportional to visits; lower = sharper/stronger but less diverse. 1.0 is standard.
 temperature = 1.0
+# [RESIGN_THRESHOLD] RESERVED — NOT currently used: self-play plays every game to the end (no
+# resignation). Intended as the value below which a clearly-lost game could be resigned to save compute.
 resign_threshold = -0.95
+# [RESIGN_MIN_PLY] RESERVED — see above. Intended minimum ply before resignation is permitted.
 resign_min_ply = 18
 
 [train]
+# [TRAIN_HOURS] Wall-clock training budget; the loop keeps running generations until this elapses.
+# Fractional allowed (0.5 = 30 min).
 hours = 48.0
+# [GAMES_PER_GEN] Self-play games generated per generation = the fresh training data per cycle.
+# 32 (smoke) · 256–1024 · 8192 (huge box). Larger = better data but longer, more CPU-bound generations.
 games_per_generation = 256
+# [REPLAY_BUFFER] Max self-play samples (positions) kept for training; oldest are evicted. ~100k–1M.
+# Spans several generations of data and bounds RAM use.
 replay_buffer_size = 200_000
+# [BATCH_SIZE] SGD minibatch size per training step. 256–1024 (GPU); up to 4096 on big GPUs.
+# Larger = smoother gradients, more VRAM.
 batch_size = 512
+# [TRAIN_STEPS] Optimizer steps per generation. Balance against games_per_generation so you don't
+# overfit each batch of fresh data. 100–1200.
 train_steps_per_generation = 500
+# [LR] Initial Adam learning rate. ~1e-3 at this scale; consider lower (3e-4) for very large nets.
 learning_rate = 0.001
+# [WEIGHT_DECAY] L2 regularisation. ~1e-4 is standard.
 weight_decay = 0.0001
+# [GRAD_CLIP] Clip gradients to this max norm for stability. ~1.0 (a large value ≈ off).
 grad_clip = 1.0
+# [LR_SCHEDULE] "cosine" (smooth decay toward lr_min), "step" (×lr_decay every lr_step_gens),
+# or "constant".
 lr_schedule = "cosine"
+# [LR_MIN] Floor learning rate for the cosine schedule. ~1e-5.
 lr_min = 0.00001
+# [LR_WARMUP_STEPS] Linear LR warm-up over this many initial optimizer steps; stabilises early
+# training. ~100–1000.
 lr_warmup_steps = 100
+# [LR_DECAY] Multiplier applied per step-decay event (step schedule only; 0.5 = halve). Ignored otherwise.
 lr_decay = 0.5
+# [LR_STEP_GENS] Generations between step-decay events (step schedule only).
 lr_step_gens = 20
+# [VALUE_LOSS_WEIGHT] Weight of the value loss vs the policy loss (total = policy + w·value).
+# 1.0 standard; lower it if the value head overfits.
 value_loss_weight = 1.0
+# [ARENA_GAMES] Gating match: a new candidate net plays this many games vs the current best.
+# More games = a less noisy gate but more cost. 12 (smoke) · 40–160.
 arena_games = 64
+# [ARENA_WIN_RATE] Candidate must win at least this fraction of the arena match to be promoted to
+# best.pt. ~0.55 — demands a clear improvement, not a coin-flip 0.50.
 arena_win_rate = 0.55
+# [ARENA_SIMS] MCTS sims per move during arena games (often ≤ self-play sims to save time). 60–200.
 arena_simulations = 120
+# [SELFPLAY_TIMEOUT] Watchdog (seconds): if the self-play worker pool returns nothing for this long
+# it's assumed hung and terminated (partial results kept). Scale with generation size.
 selfplay_timeout = 1800.0
+# [ARENA_TIMEOUT] Watchdog (seconds) for the arena pool — same idea.
 arena_timeout = 900.0
+# [CHECKPOINT_DIR] Where latest.pt / best.pt (and optional gen snapshots) are written.
+# Bind-mount this so checkpoints survive container restarts (and enable resume).
 checkpoint_dir = "checkpoints"
+# [SAVE_EVERY_CKPT] If true, also save a per-generation snapshot gen_NNNN.pt (more disk).
+# false keeps only latest.pt + best.pt.
 save_every_checkpoint = false
+# [LOG_DIR] Directory for timestamped run logs (one file per run). Bind-mount to keep them.
 log_dir = "logs"
+# [SEED] RNG seed for reproducibility. 0 is fine; change to vary a run.
 seed = 0
+# [NUM_ACTORS] Self-play / arena worker processes. 0 = auto (= CPU cores − 1). Lower it to cap CPU.
+# Workers evaluate the net on CPU by default (self-play is CPU-bound; the GPU is kept for training),
+# so a high core count no longer risks GPU OOM. [SELFPLAY_DEVICE] overrides the worker eval device:
+# set it to "cuda" for GPU self-play, but ONLY with a small NUM_ACTORS — each GPU worker is its own
+# CUDA context (~0.5GB+), so ~one-per-core across a single card OOMs it regardless of VRAM.
 num_actors = 0
 
 [engine]
+# The deployed play/analysis engine (engine.play_engine), separate from the training loop above.
+# [ENGINE_SIMS] MCTS sims per move when the engine plays or analyses. Higher = stronger & slower.
+# 400–1600.
 simulations = 400
+# [ENGINE_TEMPERATURE] 0.0 = always pick the most-visited (strongest) move. >0 adds variety for
+# casual play / analysis diversity.
 temperature = 0.0
+# [ENGINE_MOVE_SECONDS] RESERVED — NOT currently used: the engine searches a fixed `simulations`
+# count, not a time budget. Intended as a per-move time cap.
 move_budget_seconds = 5.0
+# [ENGINE_WS] Backend WebSocket URL the engine connects to as an external participant.
 backend_ws = "ws://localhost:3001"
 
 # ============================================================================
 #  Hardware presets — pick one in the "Build and Push Image" workflow, or via
-#  ./build_container.sh --preset <name>. Applied in place at build time.
+#  ./build_container.sh --preset <name>. Applied in place at build time: each
+#  preset's values are MERGED over the base config above (only the keys it lists
+#  change). Per-key descriptions live in the base sections above — the inline
+#  tables here can't carry their own comments. `device` sets DEVICE ("cpu"/"cuda").
 # ============================================================================
 [presets.smoke]
   description = "Smoke run — verify the pipeline, NOT strength"

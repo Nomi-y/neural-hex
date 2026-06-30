@@ -90,8 +90,11 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
 _WORKER: dict = {}
 
 
-def build_eval_net(cfg: Config, np_state) -> Evaluator:
-    """Rebuild a net on cfg.device from numpy weights and wrap it in an Evaluator.
+def build_eval_net(cfg: Config, np_state, device: str = None) -> Evaluator:
+    """Rebuild a net on `device` (default cfg.device) from numpy weights and wrap it in an Evaluator.
+
+    Fan-out workers pass cfg.worker_eval_device() (CPU on a CUDA box) so hundreds of workers don't
+    each spin up a CUDA context and OOM the GPU; the in-process single-actor path uses cfg.device.
 
     Weights arrive as numpy (not torch tensors) so the inter-process transfer avoids torch's
     shared-memory tensor reducer, which would hold an FD per tensor per worker in the parent and
@@ -99,22 +102,23 @@ def build_eval_net(cfg: Config, np_state) -> Evaluator:
     """
     import torch
 
-    if cfg.device == "cpu":
+    device = device or cfg.device
+    if device == "cpu":
         torch.set_num_threads(1)  # each CPU worker is single-threaded; parallelism is across workers
-    net = build_net(cfg).to(cfg.device)
+    net = build_net(cfg).to(device)
     # np_state may carry torch.compile's '_orig_mod.' prefix; strip it so it loads into a plain net.
-    net.load_state_dict(CleanStateDict({k: torch.from_numpy(v).to(cfg.device) for k, v in np_state.items()}))
+    net.load_state_dict(CleanStateDict({k: torch.from_numpy(v).to(device) for k, v in np_state.items()}))
     net.eval()
-    return Evaluator(net, cfg.device)
+    return Evaluator(net, device)
 
 
 def to_numpy_state(state_dict) -> dict:
     return {k: v.detach().cpu().numpy() for k, v in state_dict.items()}
 
 
-def _init_worker(cfg: Config, np_state) -> None:
+def _init_worker(cfg: Config, np_state, device: str) -> None:
     _WORKER["cfg"] = cfg
-    _WORKER["evaluator"] = build_eval_net(cfg, np_state)
+    _WORKER["evaluator"] = build_eval_net(cfg, np_state, device)
 
 
 def _play_chunk(args) -> Tuple[int, List[Sample]]:
@@ -131,15 +135,16 @@ def split_evenly(total: int, parts: int) -> List[int]:
     return [base + (1 if i < extra else 0) for i in range(parts)]
 
 
-def chunk_sizes(cfg: Config, num_games: int, actors: int) -> List[int]:
-    """Per-task game counts, tuned per device.
+def chunk_sizes(cfg: Config, num_games: int, actors: int, device: str = None) -> List[int]:
+    """Per-task game counts, tuned to the worker inference `device` (default cfg.device).
 
     GPU: chunks sized to parallel_games (the optimal batch size for the GPU forward pass),
     with 2-3× more chunks than workers so imap_unordered naturally balances — fast workers
     grab extra chunks instead of idling behind a slow one.  CPU: many small chunks so fast
     cores keep grabbing work; batch size is irrelevant there (the net runs one sample at a
     time on CPU regardless)."""
-    if cfg.device == "cuda":
+    device = device or cfg.device
+    if device == "cuda":
         chunk = max(1, cfg.selfplay.parallel_games)
         parts = max(actors * 2, (num_games + chunk - 1) // chunk)
         return split_evenly(num_games, parts)
@@ -197,8 +202,12 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         return out
 
     np_state = to_numpy_state(state_dict)
-    sizes = chunk_sizes(cfg, num_games, actors)
+    wdev = cfg.worker_eval_device()
+    sizes = chunk_sizes(cfg, num_games, actors, wdev)
     tasks = [(size, base_seed + i) for i, size in enumerate(sizes)]
+    log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {wdev}), "
+        f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
+        f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
     ctx = mp.get_context("spawn")
     results: List[List[Sample]] = []
     done = 0
@@ -211,7 +220,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         if progress:
             progress(done, num_games)
 
-    with ctx.Pool(processes=actors, initializer=_init_worker, initargs=(cfg, np_state)) as pool:
+    with ctx.Pool(processes=actors, initializer=_init_worker, initargs=(cfg, np_state, wdev)) as pool:
         it = pool.imap_unordered(_play_chunk, tasks)
         ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on)
     if not ok:

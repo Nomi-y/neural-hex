@@ -26,11 +26,22 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir numpy websockets
 
 # ── Torch installation ───────────────────────────────────────────────────────
-# Default: CPU-only torch (--index-url cpu).  With --cuda, install the default
-# PyPI torch wheel which already bundles the right CUDA libraries for the host.
+# Default: CPU-only torch (--index-url cpu).  With --cuda, install a torch wheel
+# whose bundled CUDA runtime matches the host GPU driver.
+#
+# CUDA_WHEEL picks that runtime. A driver NEWER than the wheel always runs it
+# (backward compatibility); a wheel newer than the driver makes torch decide the
+# driver is "too old", disable CUDA, and silently run on CPU. So on a fleet with
+# varying/unknown drivers (e.g. RunPod, where the driver can change between runs
+# on the same GPU) pin the LOWEST CUDA that supports your GPU arch — then every
+# host driver is >= the wheel and CUDA just works.
+#   cu121  needs driver CUDA >= 12.1 (R530+)  — safe default across the fleet
+#   cu118  needs driver CUDA >= 11.8 (R520+)  — ultra-safe, older GPUs
+#   cu128  needs driver CUDA >= 12.8 (R570+)  — REQUIRED for Blackwell (RTX 5090/B200)
 ARG CUDA_BUILD="false"
+ARG CUDA_WHEEL="cu121"
 RUN if [ "${CUDA_BUILD}" = "true" ]; then \
-      pip install --no-cache-dir --default-timeout=600 torch; \
+      pip install --no-cache-dir --default-timeout=600 torch --index-url https://download.pytorch.org/whl/${CUDA_WHEEL}; \
     else \
       pip install --no-cache-dir --default-timeout=600 torch --index-url https://download.pytorch.org/whl/cpu; \
     fi
@@ -41,5 +52,7 @@ COPY . .
 # Smoke-test the container build to catch config/code issues early.
 RUN python smoke_test.py
 
-# Default command: launch training directly (hyperparams.toml is the config).
-CMD ["python", "-m", "train.train"]
+# Entrypoint script logs GPU info, starts CUDA MPS (best-effort), then launches training.
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+CMD ["./entrypoint.sh"]

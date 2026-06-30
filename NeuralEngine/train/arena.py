@@ -87,10 +87,10 @@ def play_match(cfg: Config, candidate: Evaluator, best: Evaluator, num_games: in
 _ARENA: dict = {}
 
 
-def _init_arena_worker(cfg: Config, cand_np, best_np) -> None:
+def _init_arena_worker(cfg: Config, cand_np, best_np, device: str) -> None:
     _ARENA["cfg"] = cfg
-    _ARENA["candidate"] = build_eval_net(cfg, cand_np)
-    _ARENA["best"] = build_eval_net(cfg, best_np)
+    _ARENA["candidate"] = build_eval_net(cfg, cand_np, device)
+    _ARENA["best"] = build_eval_net(cfg, best_np, device)
 
 
 def _play_arena_chunk(args):
@@ -115,11 +115,15 @@ def play_match_parallel(cfg: Config, cand_state, best_state, num_games: int, sim
         rng = np.random.default_rng(base_seed)
         return _run_games(cfg, candidate, best, num_games, simulations, rng, 0, progress) / num_games
 
-    sizes = chunk_sizes(cfg, num_games, actors)
+    wdev = cfg.worker_eval_device()
+    sizes = chunk_sizes(cfg, num_games, actors, wdev)
     # color_offset = games preceding this chunk, so the RED/BLUE alternation is global, not per-chunk.
     offsets = np.cumsum([0] + sizes[:-1]).tolist()
     tasks = [(size, int(off), simulations, base_seed + i)
              for i, (size, off) in enumerate(zip(sizes, offsets))]
+    log(f"[arena] fanning {num_games} games across {actors} actors (eval on {wdev}), "
+        f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
+        f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
     ctx = mp.get_context("spawn")
     total_wins = 0
     done = 0
@@ -132,7 +136,7 @@ def play_match_parallel(cfg: Config, cand_state, best_state, num_games: int, sim
         if progress:
             progress(done, num_games)
 
-    with ctx.Pool(processes=actors, initializer=_init_arena_worker, initargs=(cfg, cand_np, best_np)) as pool:
+    with ctx.Pool(processes=actors, initializer=_init_arena_worker, initargs=(cfg, cand_np, best_np, wdev)) as pool:
         it = pool.imap_unordered(_play_arena_chunk, tasks)
         ok = drain_pool(pool, it, len(tasks), cfg.train.arena_timeout, _on)
     if not ok:

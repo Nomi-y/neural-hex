@@ -10,7 +10,8 @@
 #  Usage:
 #    ./build_container.sh                        # build with current hyperparams.toml
 #    ./build_container.sh --preset cuda-balanced # apply preset before building
-#    ./build_container.sh --cuda                 # install CUDA torch wheel
+#    ./build_container.sh --cuda                 # install CUDA torch wheel (cu121, fleet-safe)
+#    ./build_container.sh --cuda --cuda-wheel cu128  # Blackwell (RTX 5090/B200)
 #    ./build_container.sh --tag myengine:v2      # custom image tag
 #    ./build_container.sh --list-presets          # show available presets
 #
@@ -30,6 +31,7 @@ cd "$(dirname "$0")"
 IMAGE="neuralengine"
 PRESET=""
 CUDA=false
+CUDA_WHEEL="cu121"
 LIST_PRESETS=false
 DRY_RUN=false
 
@@ -46,6 +48,8 @@ while [ $# -gt 0 ]; do
       IMAGE="$2"; shift 2 ;;
     --cuda)
       CUDA=true; shift ;;
+    --cuda-wheel)
+      CUDA_WHEEL="$2"; CUDA=true; shift 2 ;;
     --list-presets)
       LIST_PRESETS=true; shift ;;
     --dry-run)
@@ -249,7 +253,9 @@ fi
 # Build args
 BUILD_ARGS=""
 if $CUDA; then
-  BUILD_ARGS="$BUILD_ARGS --build-arg CUDA_BUILD=true"
+  BUILD_ARGS="$BUILD_ARGS --build-arg CUDA_BUILD=true --build-arg CUDA_WHEEL=$CUDA_WHEEL"
+  echo "=== CUDA torch wheel: $CUDA_WHEEL (must be <= host driver's CUDA version; check nvidia-smi) ==="
+  echo
 fi
 
 echo "=== Building image: $IMAGE  (using $CONTAINER_CMD) ==="

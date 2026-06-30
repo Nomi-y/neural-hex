@@ -23,10 +23,21 @@ on:
           - cuda-large
           - cuda-moon
           - cuda-affordable-11
+          - cuda-5090
       cuda:
         description: "Install the CUDA torch wheel (GPU image)"
         type: boolean
         default: true
+      cuda_wheel:
+        description: "CUDA wheel — pin <= the LOWEST host driver's CUDA (cu121 fleet-safe; cu128 for Blackwell 5090)"
+        type: choice
+        default: cu121
+        options:
+          - cu121
+          - cu118
+          - cu124
+          - cu126
+          - cu128
   push:
     branches: [images]
 
@@ -64,6 +75,8 @@ jobs:
           [ -z "$PRESET" ] && PRESET="none"
           CUDA="${{ github.event.inputs.cuda }}"
           [ -z "$CUDA" ] && CUDA="true"
+          CUDA_WHEEL="${{ github.event.inputs.cuda_wheel }}"
+          [ -z "$CUDA_WHEEL" ] && CUDA_WHEEL="cu121"
 
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           IMAGE="ghcr.io/${OWNER}/neural-hex"
@@ -73,6 +86,7 @@ jobs:
           {
             echo "preset=$PRESET"
             echo "cuda=$CUDA"
+            echo "cuda_wheel=$CUDA_WHEEL"
             echo "tags=${IMAGE}:latest,${IMAGE}:${DESC},${IMAGE}:sha-${SHORT}"
           } >> "$GITHUB_OUTPUT"
 
@@ -101,6 +115,7 @@ jobs:
           push: true
           build-args: |
             CUDA_BUILD=${{ steps.cfg.outputs.cuda }}
+            CUDA_WHEEL=${{ steps.cfg.outputs.cuda_wheel }}
           tags: ${{ steps.cfg.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

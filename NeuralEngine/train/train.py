@@ -47,6 +47,74 @@ def _setup_cuda() -> None:
         torch.backends.cudnn.allow_tf32 = True
 
 
+def _gpu_memory_str() -> str:
+    """Return a compact VRAM summary string, or '' if CUDA is unavailable."""
+    if not torch.cuda.is_available():
+        return ""
+    try:
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+        return f"VRAM: {allocated / (1024**3):.1f}G allocated, {reserved / (1024**3):.1f}G reserved"
+    except Exception:
+        return ""
+
+
+def _log_gpu_device() -> None:
+    """Log CUDA device properties once at startup."""
+    if not torch.cuda.is_available():
+        return
+    for i in range(torch.cuda.device_count()):
+        p = torch.cuda.get_device_properties(i)
+        total_gb = p.total_mem / (1024 ** 3)
+        log(f"  cuda:{i}  {p.name}  {total_gb:.1f}GB  compute {p.major}.{p.minor}")
+
+
+def _gpu_hardware_present() -> bool:
+    """True if an NVIDIA GPU is visible to the OS, regardless of whether torch can use it.
+    Independent of the torch/driver CUDA check, so it still fires when a wheel/driver
+    mismatch has disabled CUDA inside torch."""
+    import glob
+    if glob.glob("/proc/driver/nvidia/gpus/*") or glob.glob("/dev/nvidia[0-9]*"):
+        return True
+    import shutil, subprocess
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        try:
+            out = subprocess.run([smi, "-L"], capture_output=True, text=True, timeout=10)
+            if out.returncode == 0 and "GPU " in out.stdout:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _assert_device_or_die(device: str) -> None:
+    """Refuse to silently train on CPU when a GPU is physically present — that almost
+    always means the image's CUDA wheel is newer than the host driver (e.g. a RunPod
+    box whose driver changed between runs), and a rented GPU would otherwise sit idle
+    while training crawls on CPU. Set ALLOW_CPU=1 to override for an intentional CPU run."""
+    # device=cuda but torch can't actually use it (e.g. wheel newer than driver):
+    # fail with the same actionable message instead of crashing deep in training.
+    if device == "cuda" and torch.cuda.is_available():
+        return
+    if device != "cuda":
+        if os.environ.get("ALLOW_CPU", "").lower() in ("1", "true", "yes"):
+            return
+        if not _gpu_hardware_present():
+            return
+    built_for = getattr(torch.version, "cuda", None) or "cpu-only"
+    log("=" * 60)
+    log("FATAL: an NVIDIA GPU is present but torch cannot use it — refusing to train on CPU.")
+    log(f"  torch {torch.__version__} was built for CUDA {built_for}; this host's driver is older.")
+    log("  The GPU you are paying for would sit idle. Fix the wheel/driver mismatch:")
+    log("    • Check the host driver's CUDA: run  nvidia-smi  (top-right 'CUDA Version').")
+    log("    • Rebuild the image with a wheel <= that, e.g.  ./build_container.sh --cuda --cuda-wheel cu121")
+    log("    • Blackwell (RTX 5090/B200) needs cu128 AND a driver supporting CUDA 12.8.")
+    log("  To intentionally train on CPU anyway, set  ALLOW_CPU=1.")
+    log("=" * 60)
+    raise SystemExit(1)
+
+
 def _setup_log_file(cfg: Config) -> None:
     """If log_dir is configured, tee all log output to a timestamped file there."""
     if not cfg.train.log_dir:
@@ -272,6 +340,7 @@ def main() -> None:
     np.random.seed(cfg.train.seed)
     rng = np.random.default_rng(cfg.train.seed)
     device = cfg.device
+    _assert_device_or_die(device)
     if device == "cpu":
         torch.set_num_threads(max(1, os.cpu_count() or 1))
 
@@ -282,8 +351,10 @@ def main() -> None:
     log("=" * 60)
     log(f"NeuralEngine training starting")
     log(f"  device    = {device}")
+    if device == "cuda":
+        _log_gpu_device()
     log(f"  board     = {cfg.game.board_size}×{cfg.game.board_size}  swap={cfg.game.swap_rule}")
-    log(f"  net       = {cfg.net.channels} ch × {cfg.net.blocks} blocks  value_hidden={cfg.net.value_hidden}")
+    log(f"  net       = {cfg.net.channels} ch × {cfg.net.blocks} blocks  value_hidden={cfg.net.value_hidden}  se={cfg.net.use_se}")
     log(f"  mcts      = {cfg.mcts.simulations} sims  cpuct={cfg.mcts.c_puct}  "
         f"dirichlet=({cfg.mcts.dirichlet_alpha},{cfg.mcts.dirichlet_epsilon})  "
         f"solver≤{cfg.mcts.solver_empty_threshold}  vc={cfg.mcts.use_virtual_connection}")
@@ -297,10 +368,15 @@ def main() -> None:
         f"lr_min={cfg.train.lr_min}  warmup={cfg.train.lr_warmup_steps}")
     log(f"  arena     = {cfg.train.arena_games} games @ {cfg.train.arena_simulations} sims  "
         f"threshold={cfg.train.arena_win_rate:.0%}")
-    log(f"  actors    = {cfg.resolve_actors()}  seed={cfg.train.seed}")
+    log(f"  actors    = {cfg.resolve_actors()}  seed={cfg.train.seed}  selfplay_eval={cfg.worker_eval_device()}")
     log(f"  checkpoint_dir = {cfg.train.checkpoint_dir}")
     log(f"  save_every_ckpt = {cfg.train.save_every_checkpoint}")
     log(f"  log_dir   = {cfg.train.log_dir or '(stdout only)'}")
+    log(f"  amp       = {'on' if device == 'cuda' else 'off'}  compile={'on' if device == 'cuda' else 'off'}")
+    if device == "cuda":
+        mem = _gpu_memory_str()
+        if mem:
+            log(f"  {mem}")
     log("=" * 60)
 
     net = build_net(cfg).to(device)
@@ -327,6 +403,11 @@ def main() -> None:
     buffer = ReplayBuffer(cfg.train.replay_buffer_size, cfg.game.board_size)
     generation = 0
     best_state = copy.deepcopy(bare.state_dict())
+
+    if device == "cuda":
+        mem = _gpu_memory_str()
+        if mem:
+            log(f"  after model+optim: {mem}")
 
     latest_path = os.path.join(cfg.train.checkpoint_dir, LATEST)
     best_path = os.path.join(cfg.train.checkpoint_dir, BEST)
@@ -374,9 +455,11 @@ def main() -> None:
             )
             buffer.extend(samples)
             sp_dt = time.time() - sp_start
+            mem = _gpu_memory_str()
             log(f"[gen {generation}] self-play done in {offset_str(sp_dt)} "
                 f"({len(samples)} samples, {len(samples) / max(1e-9, sp_dt):.0f} samples/s, "
-                f"buffer {len(buffer)}/{buffer.capacity})")
+                f"buffer {len(buffer)}/{buffer.capacity}"
+                + (f", {mem}" if mem else "") + ")")
             if len(buffer) < cfg.train.batch_size:
                 log(f"[gen {generation}] buffer warming ({len(buffer)}/{cfg.train.batch_size}) "
                     f"— skipping train/arena")
@@ -390,8 +473,10 @@ def main() -> None:
             policy_loss, value_loss, total_loss = _train_steps(
                 net, optimizer, buffer, cfg, rng, device, generation)
             tr_dt = time.time() - tr_start
+            mem = _gpu_memory_str()
             log(f"[gen {generation}] training done in {offset_str(tr_dt)} "
-                f"(ploss={policy_loss:.3f} vloss={value_loss:.3f} total={total_loss:.3f})")
+                f"(ploss={policy_loss:.3f} vloss={value_loss:.3f} total={total_loss:.3f}"
+                + (f", {mem}" if mem else "") + ")")
 
             # ── Arena ────────────────────────────────────────────────────
             log(f"[gen {generation}] arena: {cfg.train.arena_games} games "
@@ -405,8 +490,10 @@ def main() -> None:
                 progress=_throttled("arena", cfg.train.arena_games),
             )
             ar_dt = time.time() - ar_start
+            mem = _gpu_memory_str()
             log(f"[gen {generation}] arena done in {offset_str(ar_dt)} "
-                f"(candidate win rate {win_rate:.0%}, threshold {cfg.train.arena_win_rate:.0%})")
+                f"(candidate win rate {win_rate:.0%}, threshold {cfg.train.arena_win_rate:.0%}"
+                + (f", {mem}" if mem else "") + ")")
 
             # ── Promotion ────────────────────────────────────────────────
             promoted = win_rate >= cfg.train.arena_win_rate

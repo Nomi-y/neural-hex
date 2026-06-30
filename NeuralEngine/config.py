@@ -231,6 +231,22 @@ class Config:
             return 1
         return max(1, mp.cpu_count() - 1)
 
+    def worker_eval_device(self) -> str:
+        """Inference device for the fanned-out self-play / arena WORKER processes.
+
+        Self-play here is CPU-bound (MCTS pegs the cores; the GPU idles during search), and
+        resolve_actors() launches ≈ one worker per core. Each worker that touches CUDA creates
+        its own CUDA context (~0.5 GB+ each: runtime + cuDNN/cuBLAS + caching allocator + Triton),
+        so fanning hundreds of them across a single GPU OOMs the card regardless of its size —
+        even 80 GB. So workers evaluate the (small) net on CPU while training keeps cfg.device.
+        Override with SELFPLAY_DEVICE to force GPU self-play (only sane with a small NUM_ACTORS)."""
+        override = os.environ.get("SELFPLAY_DEVICE")
+        if override:
+            return override
+        if self.device == "cuda":
+            return "cpu"
+        return self.device
+
 
 def load() -> Config:
     return Config()

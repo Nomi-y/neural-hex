@@ -91,6 +91,15 @@ The container bakes in `hyperparams.toml` (your config) and handles torch instal
 # Or for a top-end VPS GPU:
 ./build_container.sh --preset cuda-moon --cuda
 
+# Deploying one image across hosts whose driver varies (e.g. RunPod)? Pin the CUDA
+# wheel to the LOWEST driver you'll land on — a newer driver always runs an older
+# wheel, but a wheel newer than the driver silently falls back to CPU. cu121 (the
+# default) is safe across the modern fleet; Blackwell (RTX 5090/B200) needs cu128:
+./build_container.sh --preset cuda-5090 --cuda --cuda-wheel cu128
+
+# A run that still lands on too-old a driver aborts loudly (it won't waste the GPU
+# silently training on CPU). Set ALLOW_CPU=1 to force an intentional CPU run.
+
 # Run (CPU):
 mkdir -p checkpoints logs
 docker run -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
@@ -177,9 +186,19 @@ The training loop automatically enables these on CUDA (no config needed):
 - **GPU softmax** — evaluator keeps softmax on GPU instead of a Python loop.
 - **Work-stealing chunks** — 2–3× more self-play chunks than workers so fast cores grab extra work.
 
-For maximum GPU saturation, enable CUDA MPS before starting training:
+### Self-play runs on CPU; the GPU is for training
+
+Self-play here is **CPU-bound** — MCTS pegs the cores while the network forward pass is tiny — so
+the fanned-out self-play/arena workers evaluate the net on **CPU**, and the GPU is reserved for the
+training step. This is deliberate: putting the net on the GPU in *every* worker means one CUDA
+context per worker (~0.5 GB+ each), and with ≈ one worker per core that OOMs any card (even 80 GB)
+the moment you run on a high-vCPU box. CPU eval keeps every core busy with zero GPU-memory blowup.
+
+To force GPU self-play instead, set **`SELFPLAY_DEVICE=cuda`** — but only with a small `NUM_ACTORS`
+(few CUDA contexts), and start CUDA MPS so their batches interleave on the card:
 ```bash
 nvidia-cuda-mps-control -d
+docker run --gpus all -e SELFPLAY_DEVICE=cuda -e NUM_ACTORS=8 ... neuralengine
 ```
 
 ## Key configuration (hyperparams.toml)
