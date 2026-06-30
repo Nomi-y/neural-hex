@@ -110,12 +110,14 @@ directory (one file per run, timestamped) so you can review all generations late
 Instead of building locally and copying to the VPS, let GitHub Actions build the image and push
 it to the GitHub Container Registry (GHCR); the VPS just pulls it.
 
-**Build it** (`.github/workflows/build-image.yml`):
+**Build it** (workflow at the repo root: `.github/workflows/build-image.yml`; `NeuralEngine/` is its
+build context):
 
 - **Manual:** Actions → *Build and Push Image* → *Run workflow* → pick a preset (and CUDA on/off).
 - **Auto:** push to the `images` branch — builds `hyperparams.toml` exactly as committed.
 
-The chosen preset is baked into `hyperparams.toml` inside the image (via `.github/apply_preset.py`).
+The chosen preset is baked into `hyperparams.toml` inside the image (via the repo-root
+`.github/apply_preset.py`).
 Each build is pushed under three tags: `latest`, the preset name (or `images`), and `sha-<commit>`.
 
 **One-time setup — make the package public** (so the VPS can pull without a login):

@@ -76,9 +76,12 @@ jobs:
             echo "tags=${IMAGE}:latest,${IMAGE}:${DESC},${IMAGE}:sha-${SHORT}"
           } >> "$GITHUB_OUTPUT"
 
+      # The engine lives in the NeuralEngine/ subdir; the preset script (at the
+      # repo-root .github/) rewrites hyperparams.toml relative to its CWD.
       - name: Apply preset
         if: steps.cfg.outputs.preset != 'none'
-        run: python3 .github/apply_preset.py "${{ steps.cfg.outputs.preset }}"
+        working-directory: NeuralEngine
+        run: python3 "$GITHUB_WORKSPACE/.github/apply_preset.py" "${{ steps.cfg.outputs.preset }}"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -93,8 +96,8 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Containerfile
+          context: NeuralEngine
+          file: NeuralEngine/Containerfile
           push: true
           build-args: |
             CUDA_BUILD=${{ steps.cfg.outputs.cuda }}
