@@ -57,6 +57,17 @@ COPY . .
 RUN python smoke_test.py
 # Verify the GPU inference server matches a local evaluator (runs on CPU at build time).
 RUN python test_inference_server.py
+# Verify the logging + hardware-monitor plumbing.
+RUN python test_logging.py
+
+# ── Build-time Triton toolchain check ──────────────────────────────────────
+# torch.compile (reduce-overhead) JIT-compiles CUDA kernels via Triton, which
+# calls gcc to build a small C utility.  The slim Python image ships gcc but
+# strips the C standard library headers (libc6-dev).  If that happens, compile
+# silently falls back to eager mode at runtime (the warmup catches it, but
+# you lose the 1.5–2× training speedup).  This RUN fails the Docker build NOW
+# if gcc or stdlib.h is missing — the image never reaches GHCR broken.
+RUN echo '#include <stdlib.h>' | gcc -x c -c - -o /dev/null
 
 # Entrypoint script logs GPU info, starts CUDA MPS (best-effort), then launches training.
 COPY entrypoint.sh .
