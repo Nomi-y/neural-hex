@@ -7,7 +7,7 @@ Each generation:
   4. checkpoints are written (latest.pt always; best.pt on promotion; gen_N.pt if save_every_checkpoint).
 
 The loop runs until the wall-clock budget (TRAIN_HOURS) elapses and can be stopped/resumed at any time;
-the deployed engine simply loads checkpoints/best.pt. Run via run_training.sh or `python -m train.train`.
+the deployed engine simply loads checkpoints/best.pt. Run via `python -m train.train` (the container entrypoint).
 """
 
 from __future__ import annotations

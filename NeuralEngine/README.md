@@ -66,19 +66,21 @@ are game-theoretically identical, so the trained engine swaps correctly against 
 | `train/arena.py` | Candidate-vs-best gating matches. |
 | `train/train.py` | The training loop + checkpointing (`python -m train.train`). |
 | `engine/play_engine.py` | The deployed external engine (play + analysis). |
-| `smoke_test.py` | Fast end-to-end check on a tiny board (run after setup). |
+| `smoke_test.py` | Fast end-to-end check on a tiny board (also a container build guard). |
 
-## Setup (laptop or VPS)
+## Run the tests locally (optional)
+
+Training runs in the container (below); the build already runs `smoke_test.py` and
+`test_inference_server.py` as guards. To run them outside Docker, make a venv (Python 3.10–3.14):
 
 ```bash
 cd NeuralEngine
-./setup.sh                       # venv + CPU torch + numpy + websockets
-# On an NVIDIA GPU, install the CUDA build instead (setup.sh prints the exact command).
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 python smoke_test.py             # ~seconds; exercises every component on a 5×5 board
+python test_inference_server.py  # GPU inference server == local evaluator (runs on CPU here)
 ```
-
-Needs Python 3.10–3.14 (PyTorch wheels). The code mirrors the backend rules but has no other coupling.
 
 ## Train with Docker (recommended)
 
@@ -145,18 +147,6 @@ docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs \
 
 If you keep the package private instead, log in first with a PAT that has `read:packages`:
 `echo "$GHCR_PAT" | docker login ghcr.io -u <owner> --password-stdin`.
-
-## Train bare-metal (without Docker)
-
-```bash
-source .venv/bin/activate
-./run_training.sh                # pick a preset (or: ./run_training.sh 5)
-#   (run under tmux/nohup so it survives logout)
-```
-
-`run_training.sh` has two modes:
-1. **TOML mode** (default): reads `hyperparams.toml` directly.
-2. **Preset mode** (explicit number): overrides via env vars.
 
 ## Hardware presets
 

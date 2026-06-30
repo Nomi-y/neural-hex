@@ -27,7 +27,7 @@ fi
 shopt -s nullglob
 files=(checkpoints/*.pt)
 if [ ${#files[@]} -eq 0 ]; then
-  echo "No checkpoints found in checkpoints/. Train first (./run_training.sh)." >&2
+  echo "No checkpoints found in checkpoints/. Train first (./build_container.sh, or python -m train.train)." >&2
   exit 1
 fi
 
