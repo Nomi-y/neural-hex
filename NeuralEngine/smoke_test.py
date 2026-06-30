@@ -141,6 +141,19 @@ def cuda_checks() -> None:
     assert pol.shape[0] == 1 and val.shape[0] == 1, "cuda evaluator returned wrong shape"
     print(f"  cuda evaluator ok (policy{tuple(pol.shape)} value{tuple(val.shape)})")
 
+    # torch.compile warmup: a lazy compile() doesn't fail until first forward.
+    # The real training net goes through this; verify Triton can JIT a kernel
+    # (needs gcc in the image — missing = crash 37 min into a paid run).
+    try:
+        net2 = build_net(cfg).to("cuda")
+        net2 = torch.compile(net2, mode="reduce-overhead")
+        dummy = torch.zeros(1, cfg.net.in_planes, N, N, device="cuda")
+        _ = net2(dummy)
+        print("  cuda torch.compile warmup ok")
+    except Exception as e:
+        print(f"  cuda torch.compile warmup FAILED: {e}")
+        print("  (install gcc in the container image — Triton JIT needs a C compiler)")
+
     # Self-play + arena through the GPU inference server (on by default for cuda) — the deploy path.
     sd = net.state_dict()
     assert cfg.use_inference_server(), "inference server should be on for cuda by default"

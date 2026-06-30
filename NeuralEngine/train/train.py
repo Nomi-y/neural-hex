@@ -445,13 +445,28 @@ def main() -> None:
     # torch.compile on CUDA: JIT-compiles the network into fused kernels.
     # Uses "reduce-overhead" mode for training (amortizes compilation overhead
     # across many forward/backward passes).  MPS / CPU stay eager.
+    #
+    # compile() is lazy — it doesn't fail until the first forward.  We force a
+    # tiny warmup forward NOW so a missing C compiler (Triton's JIT
+    # needs gcc) or an unsupported-op crashes here with a clear message and a
+    # fallback to eager mode, instead of silently succeeding at build time then
+    # crashing 37 minutes into a paid run.
     use_compile = (device == "cuda")
+    compiled_ok = False
     if use_compile:
         try:
             net = torch.compile(net, mode="reduce-overhead")
-            log(f"  torch.compile: enabled (reduce-overhead)")
+            # Force compile: one tiny forward through the real net.  A forward
+            # alone triggers Triton JIT; no backward needed for the check.
+            dummy = torch.zeros(1, cfg.net.in_planes, cfg.game.board_size, cfg.game.board_size,
+                                device=device)
+            _ = net(dummy)
+            compiled_ok = True
+            log(f"  torch.compile: enabled (reduce-overhead) — warmup OK")
         except Exception as e:
-            log(f"  torch.compile: skipped ({e})")
+            net = build_net(cfg).to(device)  # fresh uncompiled net
+            log(f"  torch.compile: skipped — warmup failed ({e})")
+            log(f"  (install gcc in the container image to enable torch.compile)")
 
     # Bare (uncompiled) view of the model: its state_dict has no '_orig_mod.' prefix,
     # so checkpoints and weights shipped to workers load into plain nets.
