@@ -186,7 +186,7 @@ Presets are defined in `hyperparams.toml` and can be applied at build time:
 | `cuda-large` | 128×10 net, 400 sims — RTX 4090 / A10 class. |
 | `cuda-moon` | 160×16 net, 600 sims — saturate an A100/H100/RTX PRO 6000. |
 | `cuda-affordable-11` | 96×8 net, 200 sims, **11×11** board — affordable ~24h run (RTX 6000 Ada / A6000 / A40). |
-| `cuda-5090` | 256×20 SE net, 256 sims, **11×11**, batch 2048, buffer 500K — RTX 5090 (88% GPU, 100% power); auto-builds **cu128** (Blackwell sm_120). |
+| `cuda-5090` | 256×20 SE net, 400 sims + VC, **11×11**, batch 2048, buffer 500K — RTX 5090 (88% GPU, 100% power); auto-builds **cu128** (Blackwell sm_120). |
 
 > The **cuda-balanced** preset uses the same net size as the default TOML, so it can resume
 > existing checkpoints. Other presets start fresh. The `*-11` / `5090` presets train an **11×11**

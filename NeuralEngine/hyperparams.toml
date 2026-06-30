@@ -238,7 +238,7 @@ backend_ws = "ws://localhost:3001"
   description = "RTX 5090 (32GB) + ~16 vCPU — big 256x20 SE net to keep the GPU busy on 11x11. The NET (channels/blocks/se/board) is FIXED once training starts; the schedule (sims, batch, games/gen, steps) is env-tunable without a rebuild."
   game = { board_size = 11 }
   net = { channels = 256, blocks = 20, use_se = true, value_hidden = 256 }
-  mcts = { simulations = 256, use_virtual_connection = false, fpu_reduction = 0.25, reuse_tree = true }
+  mcts = { simulations = 400, use_virtual_connection = true, fpu_reduction = 0.25, reuse_tree = true }
   selfplay = { parallel_games = 512 }
   train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 500, batch_size = 2048, replay_buffer_size = 500000, arena_games = 48, arena_simulations = 128 }
   device = "cuda"
