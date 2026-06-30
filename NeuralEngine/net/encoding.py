@@ -76,11 +76,26 @@ def real_to_canon_action(to_move: int, size: int, real_action: int) -> int:
     return canon_to_real_action(to_move, size, real_action)
 
 
+@lru_cache(maxsize=None)
+def action_transpose(size: int) -> np.ndarray:
+    """Permutation over actions (N*N cells + swap) implementing the real<->canonical transpose.
+
+    The canonical view transposes the board when BLUE is to move; applying this permutation to a
+    real-action-indexed vector yields the canonical-indexed one (and vice versa — it is an involution).
+    The swap action is orientation-independent and maps to itself. For RED no permutation is needed.
+    """
+    n = size * size
+    perm = np.empty(n + 1, dtype=np.intp)
+    for index in range(n):
+        row, col = divmod(index, size)
+        perm[index] = col * size + row
+    perm[n] = n
+    return perm
+
+
 def canonical_legal_mask(state: HexState) -> np.ndarray:
     """Legal-move mask in *canonical* action order (so it lines up with the network's policy head)."""
-    size = state.size
     real_mask = state.legal_mask()
-    canon = np.zeros_like(real_mask)
-    for real_a in np.nonzero(real_mask)[0]:
-        canon[real_to_canon_action(state.to_move, size, int(real_a))] = True
-    return canon
+    if state.to_move == RED:
+        return real_mask
+    return real_mask[action_transpose(state.size)]

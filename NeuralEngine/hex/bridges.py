@@ -22,7 +22,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .board import EMPTY, RED, BLUE, other
+from .board import EMPTY, RED, BLUE, other, neighbours_table
 
 # Each entry: ((drow, dcol) to the bridged cell, ((dr,dc), (dr,dc)) of the two carrier cells).
 _BRIDGE_PATTERNS: Tuple[Tuple[Tuple[int, int], Tuple[Tuple[int, int], Tuple[int, int]]], ...] = (
@@ -89,9 +89,24 @@ def _affected_bridges(size: int, carrier: int):
     return _carrier_index(size)[carrier]
 
 
+@lru_cache(maxsize=None)
+def _edge_cells(size: int):
+    """(red_start, red_end, blue_start, blue_end) cell indices — the edges each colour must join."""
+    n = size * size
+    return (
+        tuple(range(size)),            # RED start: top row
+        tuple(range(n - size, n)),     # RED end:   bottom row
+        tuple(range(0, n, size)),      # BLUE start: left column
+        tuple(range(size - 1, n, size))  # BLUE end:  right column
+    )
+
+
 def virtual_connection(cells: np.ndarray, size: int, color: int) -> bool:
     """Optimistic VC: does `color` connect its edges through solid stones, intact bridges, and edge
-    contact? Heuristic only (see module docstring)."""
+    contact? Heuristic only (see module docstring).
+
+    Runs over a Python list (cells.tolist()) with precomputed edge-cell tuples — avoids per-cell numpy
+    scalar reads and divmod in this per-leaf hot loop."""
     n = size * size
     # Disjoint-set over cells plus two virtual edge nodes.
     start_node, end_node = n, n + 1
@@ -108,32 +123,29 @@ def virtual_connection(cells: np.ndarray, size: int, color: int) -> bool:
         if ra != rb:
             parent[ra] = rb
 
-    from .board import neighbours_table
-
+    cl = cells.tolist()
     nbrs = neighbours_table(size)
     bridges = bridges_table(size)
+    red_start, red_end, blue_start, blue_end = _edge_cells(size)
+    starts, ends = (red_start, red_end) if color == RED else (blue_start, blue_end)
+
+    # Edge contact for this colour's direction.
+    for index in starts:
+        if cl[index] == color:
+            union(index, start_node)
+    for index in ends:
+        if cl[index] == color:
+            union(index, end_node)
     for index in range(n):
-        if cells[index] != color:
+        if cl[index] != color:
             continue
-        row, col = divmod(index, size)
-        # Edge contact for this colour's direction.
-        if color == RED:
-            if row == 0:
-                union(index, start_node)
-            if row == size - 1:
-                union(index, end_node)
-        else:
-            if col == 0:
-                union(index, start_node)
-            if col == size - 1:
-                union(index, end_node)
         # Solid links.
         for nb in nbrs[index]:
-            if cells[nb] == color:
+            if cl[nb] == color:
                 union(index, nb)
         # Intact bridges (both carriers empty).
         for (endpoint, ca, cb) in bridges[index]:
-            if cells[endpoint] == color and cells[ca] == EMPTY and cells[cb] == EMPTY:
+            if cl[endpoint] == color and cl[ca] == EMPTY and cl[cb] == EMPTY:
                 union(index, endpoint)
     return find(start_node) == find(end_node)
 

@@ -71,13 +71,16 @@ def _select(node: Node, c_puct: float) -> int:
 def _expand(node: Node, policy_real: np.ndarray) -> None:
     """Attach priors over legal moves (renormalised) and mark the node expanded."""
     legal = node.state.legal_actions()
-    total = float(sum(policy_real[a] for a in legal))
+    pr = policy_real[legal]                       # one fancy-index instead of per-action numpy scalar reads
+    total = float(pr.sum())
+    priors = node.priors
     if total <= 0:
+        inv = 1.0 / len(legal)
         for a in legal:
-            node.priors[a] = 1.0 / len(legal)
+            priors[a] = inv
     else:
-        for a in legal:
-            node.priors[a] = float(policy_real[a]) / total
+        for a, p in zip(legal, (pr / total).tolist()):
+            priors[a] = p
     node.expanded = True
 
 

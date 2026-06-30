@@ -63,34 +63,43 @@ def transpose_map(size: int) -> np.ndarray:
 
 def detect_win(cells: np.ndarray, size: int, color: int) -> Optional[List[int]]:
     """BFS from the colour's start edge to its end edge through its own stones; returns the winning
-    path (cell indices) or None. Mirrors Backend WinDetection.DetectWin."""
+    path (cell indices) or None. Mirrors Backend WinDetection.DetectWin.
+
+    Works on a plain Python list (cells.tolist()) with a list `parent`/queue: element-by-element numpy
+    scalar indexing in this per-`play()` hot loop is far slower than native Python ints."""
     nbrs = neighbours_table(size)
-    parent = np.full(size * size, -2, dtype=np.int64)
+    cl = cells.tolist()
+    n = size * size
+    parent = [-2] * n
     queue: List[int] = []
-    for index in range(size * size):
-        if cells[index] != color:
-            continue
-        row, col = divmod(index, size)
-        on_start = (row == 0) if color == RED else (col == 0)
-        if on_start:
-            parent[index] = -1
-            queue.append(index)
+    is_red = color == RED
+    if is_red:
+        for index in range(size):                 # start edge = top row
+            if cl[index] == color:
+                parent[index] = -1
+                queue.append(index)
+        end_lo = n - size                         # end edge = bottom row (index >= end_lo)
+    else:
+        for index in range(0, n, size):           # start edge = left column
+            if cl[index] == color:
+                parent[index] = -1
+                queue.append(index)
+        end_col = size - 1                         # end edge = right column (index % size == end_col)
     head = 0
     while head < len(queue):
         current = queue[head]
         head += 1
-        row, col = divmod(current, size)
-        on_end = (row == size - 1) if color == RED else (col == size - 1)
+        on_end = current >= end_lo if is_red else current % size == end_col
         if on_end:
             path: List[int] = []
             node = current
             while node != -1:
-                path.append(int(node))
-                node = int(parent[node])
+                path.append(node)
+                node = parent[node]
             path.reverse()
             return path
         for nxt in nbrs[current]:
-            if cells[nxt] == color and parent[nxt] == -2:
+            if cl[nxt] == color and parent[nxt] == -2:
                 parent[nxt] = current
                 queue.append(nxt)
     return None

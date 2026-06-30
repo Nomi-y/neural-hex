@@ -17,10 +17,10 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 
 from config import Config
-from hex.board import HexState
+from hex.board import HexState, RED
 from net.model import build_net, CleanStateDict
 from net.evaluator import Evaluator
-from net.encoding import encode, real_to_canon_action
+from net.encoding import encode, action_transpose
 from search import mcts
 from train.clock import log
 
@@ -39,12 +39,9 @@ class _Game:
 
 
 def _canonical_pi(state: HexState, pi_real: np.ndarray) -> np.ndarray:
-    canon = np.zeros_like(pi_real)
-    size = state.size
-    nz = np.nonzero(pi_real)[0]
-    for a in nz:
-        canon[real_to_canon_action(state.to_move, size, int(a))] = pi_real[a]
-    return canon
+    if state.to_move == RED:
+        return pi_real
+    return pi_real[action_transpose(state.size)]
 
 
 def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: bool, rng: np.random.Generator,
