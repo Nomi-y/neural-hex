@@ -143,10 +143,11 @@ log_dir = "logs"
 # [SEED] RNG seed for reproducibility. 0 is fine; change to vary a run.
 seed = 0
 # [NUM_ACTORS] Self-play / arena worker processes. 0 = auto (= CPU cores − 1). Lower it to cap CPU.
-# Workers evaluate the net on CPU by default (self-play is CPU-bound; the GPU is kept for training),
-# so a high core count no longer risks GPU OOM. [SELFPLAY_DEVICE] overrides the worker eval device:
-# set it to "cuda" for GPU self-play, but ONLY with a small NUM_ACTORS — each GPU worker is its own
-# CUDA context (~0.5GB+), so ~one-per-core across a single card OOMs it regardless of VRAM.
+# On CUDA, leaf evaluation goes through ONE GPU inference server (CPU workers search; the server
+# batches the forward across all of them), so a high core count never risks GPU OOM. Toggle with
+# [INFERENCE_SERVER] (0 = per-worker CPU eval instead; [SELFPLAY_DEVICE] picks that device) and bound
+# server batch size with [INFERENCE_MAX_BATCH]. Per-worker GPU eval (SELFPLAY_DEVICE=cuda) is the old
+# OOM path — each worker is its own CUDA context (~0.5GB+) — so only with a tiny NUM_ACTORS.
 num_actors = 0
 
 [engine]

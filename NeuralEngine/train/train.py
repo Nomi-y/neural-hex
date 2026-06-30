@@ -329,8 +329,22 @@ def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.rand
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 
+def _raise_fd_limit() -> None:
+    """Bump the open-file soft limit to the hard limit. Many self-play workers (and, with the GPU
+    inference server, one response queue per worker) each consume file descriptors; the default
+    1024 soft limit is easy to exhaust on a high-vCPU box. Best-effort, POSIX-only."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < hard:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    except Exception:
+        pass
+
+
 def main() -> None:
     _setup_cuda()
+    _raise_fd_limit()
 
     cfg = load()
     _setup_log_file(cfg)
@@ -368,7 +382,8 @@ def main() -> None:
         f"lr_min={cfg.train.lr_min}  warmup={cfg.train.lr_warmup_steps}")
     log(f"  arena     = {cfg.train.arena_games} games @ {cfg.train.arena_simulations} sims  "
         f"threshold={cfg.train.arena_win_rate:.0%}")
-    log(f"  actors    = {cfg.resolve_actors()}  seed={cfg.train.seed}  selfplay_eval={cfg.worker_eval_device()}")
+    _selfplay_eval = f"gpu-server({device})" if cfg.use_inference_server() else cfg.worker_eval_device()
+    log(f"  actors    = {cfg.resolve_actors()}  seed={cfg.train.seed}  selfplay_eval={_selfplay_eval}")
     log(f"  checkpoint_dir = {cfg.train.checkpoint_dir}")
     log(f"  save_every_ckpt = {cfg.train.save_every_checkpoint}")
     log(f"  log_dir   = {cfg.train.log_dir or '(stdout only)'}")

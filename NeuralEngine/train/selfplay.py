@@ -121,6 +121,22 @@ def _init_worker(cfg: Config, np_state, device: str) -> None:
     _WORKER["evaluator"] = build_eval_net(cfg, np_state, device)
 
 
+def _claim_worker_index(counter, lock, num_workers: int) -> int:
+    """Each Pool worker claims a distinct index (its own response queue) once, in the initializer."""
+    with lock:
+        idx = counter.value
+        counter.value += 1
+    return idx % num_workers
+
+
+def _init_worker_remote(cfg: Config, req_q, resp_qs, counter, lock) -> None:
+    """Server mode: the worker does CPU search and evaluates leaves via the GPU inference server."""
+    from train.inference_server import RemoteEvaluator
+    idx = _claim_worker_index(counter, lock, len(resp_qs))
+    _WORKER["cfg"] = cfg
+    _WORKER["evaluator"] = RemoteEvaluator(0, idx, req_q, resp_qs[idx])
+
+
 def _play_chunk(args) -> Tuple[int, List[Sample]]:
     num_games, seed = args
     rng = np.random.default_rng(seed)
@@ -202,10 +218,13 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         return out
 
     np_state = to_numpy_state(state_dict)
-    wdev = cfg.worker_eval_device()
-    sizes = chunk_sizes(cfg, num_games, actors, wdev)
+    use_server = cfg.use_inference_server()
+    # Server mode: workers search on CPU but evaluate on the GPU, so size chunks the GPU way.
+    chunk_dev = cfg.device if use_server else cfg.worker_eval_device()
+    sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
     tasks = [(size, base_seed + i) for i, size in enumerate(sizes)]
-    log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {wdev}), "
+    eval_label = f"gpu-server({cfg.device})" if use_server else chunk_dev
+    log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {eval_label}), "
         f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
         f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
     ctx = mp.get_context("spawn")
@@ -220,9 +239,23 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         if progress:
             progress(done, num_games)
 
-    with ctx.Pool(processes=actors, initializer=_init_worker, initargs=(cfg, np_state, wdev)) as pool:
-        it = pool.imap_unordered(_play_chunk, tasks)
-        ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on)
+    server = None
+    if use_server:
+        from train.inference_server import InferenceServer
+        server = InferenceServer(cfg, [np_state], cfg.device, actors, ctx)
+        server.start()
+        initializer, initargs = _init_worker_remote, (cfg, server.req_q, server.resp_qs,
+                                                      server.counter, server.lock)
+    else:
+        initializer, initargs = _init_worker, (cfg, np_state, chunk_dev)
+
+    try:
+        with ctx.Pool(processes=actors, initializer=initializer, initargs=initargs) as pool:
+            it = pool.imap_unordered(_play_chunk, tasks)
+            ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on)
+    finally:
+        if server is not None:
+            server.stop()
     if not ok:
         log(f"[self-play] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s with no "
             f"result — terminated pool, continuing with {done}/{num_games} games "

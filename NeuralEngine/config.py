@@ -247,6 +247,18 @@ class Config:
             return "cpu"
         return self.device
 
+    def use_inference_server(self) -> bool:
+        """Whether fan-out self-play/arena routes leaf evaluations through ONE GPU inference server
+        (CPU workers do MCTS; a single GPU process batches the network forward across all of them).
+
+        Default on for CUDA: it uses the GPU without a CUDA context per worker, and moves the forward
+        off the CPU so cores stay on search. INFERENCE_SERVER=0/1 forces it — set 0 to fall back to the
+        per-worker CPU evaluators (worker_eval_device). Irrelevant on CPU/MPS (no GPU to centralise)."""
+        override = os.environ.get("INFERENCE_SERVER")
+        if override is not None:
+            return override.strip().lower() in ("1", "true", "yes")
+        return self.device == "cuda"
+
 
 def load() -> Config:
     return Config()

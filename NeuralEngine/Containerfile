@@ -51,6 +51,8 @@ COPY . .
 
 # Smoke-test the container build to catch config/code issues early.
 RUN python smoke_test.py
+# Verify the GPU inference server matches a local evaluator (runs on CPU at build time).
+RUN python test_inference_server.py
 
 # Entrypoint script logs GPU info, starts CUDA MPS (best-effort), then launches training.
 COPY entrypoint.sh .

@@ -186,20 +186,31 @@ The training loop automatically enables these on CUDA (no config needed):
 - **GPU softmax** — evaluator keeps softmax on GPU instead of a Python loop.
 - **Work-stealing chunks** — 2–3× more self-play chunks than workers so fast cores grab extra work.
 
-### Self-play runs on CPU; the GPU is for training
+### Self-play: CPU search workers + one GPU inference server
 
-Self-play here is **CPU-bound** — MCTS pegs the cores while the network forward pass is tiny — so
-the fanned-out self-play/arena workers evaluate the net on **CPU**, and the GPU is reserved for the
-training step. This is deliberate: putting the net on the GPU in *every* worker means one CUDA
-context per worker (~0.5 GB+ each), and with ≈ one worker per core that OOMs any card (even 80 GB)
-the moment you run on a high-vCPU box. CPU eval keeps every core busy with zero GPU-memory blowup.
+Self-play here is **CPU-bound** — MCTS pegs the cores while each network forward pass is tiny. The
+naive "put the net on the GPU in every worker" approach creates one CUDA context per worker
+(~0.5 GB+ each), so with ≈ one worker per core it OOMs any card (even 80 GB) the moment you run on a
+high-vCPU box. Two ways to avoid that, selected automatically:
 
-To force GPU self-play instead, set **`SELFPLAY_DEVICE=cuda`** — but only with a small `NUM_ACTORS`
-(few CUDA contexts), and start CUDA MPS so their batches interleave on the card:
-```bash
-nvidia-cuda-mps-control -d
-docker run --gpus all -e SELFPLAY_DEVICE=cuda -e NUM_ACTORS=8 ... neuralengine
-```
+- **CUDA (default): one inference server.** A single GPU process hosts the net(s); the many CPU
+  workers do tree search and ship leaf positions to it, which **batches the forward across all
+  workers**. One CUDA context (no OOM), and the network forward runs on the otherwise-idle GPU so
+  cores stay on search. Arena's two nets (candidate, best) are served by the same process.
+- **CPU fallback.** Set **`INFERENCE_SERVER=0`** and workers evaluate the (small) net on CPU while
+  the GPU is used only for the training step. Robust and simple; slightly more CPU per worker.
+
+Knobs (all env, so they work with baked images):
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `INFERENCE_SERVER` | on for CUDA | `0`/`1` — GPU inference server vs per-worker CPU eval. |
+| `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server coalesces into one forward (bounds VRAM). |
+| `SELFPLAY_DEVICE` | cpu (CUDA box) | Worker eval device when the server is **off**. |
+| `NUM_ACTORS` | cores − 1 | Self-play / arena worker processes. |
+
+> The proper scaling path is the inference server; `SELFPLAY_DEVICE=cuda` (per-worker GPU eval) is
+> only sane with a tiny `NUM_ACTORS` and is superseded by the server. CUDA MPS is no longer required.
 
 ## Key configuration (hyperparams.toml)
 
