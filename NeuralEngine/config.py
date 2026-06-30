@@ -104,6 +104,42 @@ def _detect_device() -> str:
     return "cpu"
 
 
+def _cgroup_cpu_quota() -> Optional[float]:
+    """CPU limit (in cores) from the cgroup CFS quota, or None if unlimited/unknown. Containers often
+    cap CPU *time* via a quota without shrinking the affinity mask, so cpu_count()/affinity miss it."""
+    try:  # cgroup v2
+        with open("/sys/fs/cgroup/cpu.max") as f:
+            quota, period = f.read().split()
+        if quota != "max" and int(period) > 0:
+            return int(quota) / int(period)
+    except (OSError, ValueError):
+        pass
+    try:  # cgroup v1
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as f:
+            quota = int(f.read())
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as f:
+            period = int(f.read())
+        if quota > 0 and period > 0:
+            return quota / period
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def available_cpus() -> int:
+    """CPUs actually usable by this process — respects CPU affinity / cpuset AND a CFS quota, so it
+    returns the container's allocation (e.g. 16 vCPU) rather than the host's logical core count
+    (e.g. 64). Without this, a 16-vCPU box spawns ~63 workers and thrashes."""
+    try:
+        n = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        n = os.cpu_count() or 1
+    quota = _cgroup_cpu_quota()
+    if quota is not None:
+        n = min(n, max(1, int(quota)))
+    return max(1, n)
+
+
 # ── Config dataclasses ───────────────────────────────────────────────────────
 
 @dataclass
@@ -218,18 +254,18 @@ class Config:
     device: str = field(default_factory=_detect_device)
 
     def resolve_actors(self) -> int:
-        """How many self-play/arena worker processes to launch.
+        """How many self-play/arena worker processes to launch — one CPU search worker per usable core.
 
-        On CUDA we deliberately run MANY processes (≈ one per core), each batching its own games and
-        holding its own copy of the (small) net on the shared GPU — their NN batches interleave on the
-        card (truly concurrently under CUDA MPS), so the GPU stays fed while every core does Python tree
-        work in parallel. MPS (Apple) doesn't multi-process cleanly, so it stays single-actor. Override
-        with NUM_ACTORS."""
+        Uses available_cpus() (cgroup/affinity-aware), NOT mp.cpu_count(): on a 16-vCPU container the
+        host's 64 logical cores would otherwise spawn 63 workers and thrash. Reserve one core for the
+        main loop, plus one for the GPU inference server when it's on (a CPU-starved server can't keep
+        the GPU fed). MPS (Apple) stays single-actor. Override with NUM_ACTORS."""
         if self.train.num_actors > 0:
             return self.train.num_actors
         if self.device == "mps":
             return 1
-        return max(1, mp.cpu_count() - 1)
+        reserve = 2 if self.use_inference_server() else 1
+        return max(1, available_cpus() - reserve)
 
     def worker_eval_device(self) -> str:
         """Inference device for the fanned-out self-play / arena WORKER processes.

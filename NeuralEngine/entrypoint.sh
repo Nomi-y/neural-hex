@@ -13,6 +13,10 @@
 set -euo pipefail
 cd /app
 
+# Stream logs live: Python block-buffers stdout when it's a pipe (docker logs), so progress
+# otherwise lags in big chunks. Unbuffered for the process and every spawned worker.
+export PYTHONUNBUFFERED=1
+
 # ── Optional: start CUDA MPS daemon ────────────────────────────────────────
 MPS_CTRL=""
 for candidate in nvidia-cuda-mps-control nvidia-mps; do
@@ -54,4 +58,4 @@ else:
 fi
 
 echo "[entrypoint] starting training…"
-exec python -m train.train
+exec python -u -m train.train

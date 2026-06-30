@@ -26,7 +26,7 @@ import torch.nn.functional as F
 # Allow `python -m train.train` and `python train/train.py` alike.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import load, Config
+from config import load, Config, available_cpus
 from net.model import build_net, BareModule, CleanStateDict
 from train.replay_buffer import ReplayBuffer
 from train import selfplay, arena
@@ -173,7 +173,7 @@ def _save(path: str, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-def _throttled(label: str, total: int, every_seconds: float = 15.0):
+def _throttled(label: str, total: int, every_seconds: float = 10.0):
     """A progress(done, total) callback that logs at most once every `every_seconds` (and at 100%)."""
     state = {"last": 0.0}
     phase_start = time.time()
@@ -414,7 +414,8 @@ def main() -> None:
     log(f"  arena     = {cfg.train.arena_games} games @ {cfg.train.arena_simulations} sims  "
         f"threshold={cfg.train.arena_win_rate:.0%}")
     _selfplay_eval = f"gpu-server({device})" if cfg.use_inference_server() else cfg.worker_eval_device()
-    log(f"  actors    = {cfg.resolve_actors()}  seed={cfg.train.seed}  selfplay_eval={_selfplay_eval}")
+    log(f"  actors    = {cfg.resolve_actors()} (of {available_cpus()} usable cpus)  "
+        f"seed={cfg.train.seed}  selfplay_eval={_selfplay_eval}")
     log(f"  checkpoint_dir = {cfg.train.checkpoint_dir}")
     log(f"  save_every_ckpt = {cfg.train.save_every_checkpoint}")
     log(f"  log_dir   = {cfg.train.log_dir or '(stdout only)'}")

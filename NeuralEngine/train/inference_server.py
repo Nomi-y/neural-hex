@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import queue
+import time
 from typing import List, Tuple
 
 import numpy as np
@@ -92,6 +93,12 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         net.eval()
         nets.append(net)
 
+    report_every = float(os.environ.get("INFERENCE_LOG_EVERY", "10"))
+    print(f"[infer] server ready on {device}: {len(nets)} net(s), max_batch={max_batch}, "
+          f"heartbeat every {report_every:.0f}s", flush=True)
+    n_batches = n_leaves = max_seen = 0
+    last_report = time.time()
+
     while not stop_evt.is_set():
         try:
             first = req_q.get(timeout=0.1)
@@ -134,6 +141,18 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
                 n = p.shape[0]
                 resp_qs[worker_idx].put((rid, probs[off:off + n], values_np[off:off + n]))
                 off += n
+            n_batches += 1
+            n_leaves += planes.shape[0]
+            max_seen = max(max_seen, planes.shape[0])
+
+        # Heartbeat: avg/peak batch size + leaves/s show directly whether the GPU is being fed.
+        now = time.time()
+        if now - last_report >= report_every:
+            dt = now - last_report
+            print(f"[infer] {n_batches} batches, {n_leaves / max(1, n_batches):.0f} avg leaves/batch, "
+                  f"{n_leaves / dt:.0f} leaves/s, peak batch {max_seen}", flush=True)
+            n_batches = n_leaves = max_seen = 0
+            last_report = now
 
         if stop:
             break
