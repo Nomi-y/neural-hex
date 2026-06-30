@@ -162,7 +162,7 @@ num_actors = 0
 util_interval = 60.0
 # [INFERENCE_LOG_EVERY] Seconds between [infer] server heartbeat lines (batches, leaves/s,
 # avg/peak batch size). 10–60; 30 is a readable default.
-infer_heartbeat = 30.0
+infer_heartbeat = 60.0
 
 [engine]
 # The deployed play/analysis engine (engine.play_engine), separate from the training loop above.
@@ -239,6 +239,6 @@ backend_ws = "ws://localhost:3001"
   game = { board_size = 11 }
   net = { channels = 256, blocks = 20, use_se = true, value_hidden = 256 }
   mcts = { simulations = 256, use_virtual_connection = false, fpu_reduction = 0.25, reuse_tree = true }
-  selfplay = { parallel_games = 256 }
-  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 500, batch_size = 1024, arena_games = 48, arena_simulations = 128 }
+  selfplay = { parallel_games = 512 }
+  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 500, batch_size = 2048, replay_buffer_size = 500000, arena_games = 48, arena_simulations = 128 }
   device = "cuda"
