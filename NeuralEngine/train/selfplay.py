@@ -28,7 +28,7 @@ Sample = Tuple[np.ndarray, np.ndarray, float]
 
 
 class _Game:
-    __slots__ = ("state", "history", "ply", "done", "winner")
+    __slots__ = ("state", "history", "ply", "done", "winner", "root")
 
     def __init__(self, state: HexState) -> None:
         self.state = state
@@ -36,6 +36,7 @@ class _Game:
         self.ply = 0
         self.done = False
         self.winner = 0
+        self.root = None   # carried MCTS subtree for the next move when cfg.mcts.reuse_tree
 
 
 def _canonical_pi(state: HexState, pi_real: np.ndarray) -> np.ndarray:
@@ -48,6 +49,7 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
                simulations: int | None = None) -> List[Sample]:
     sims = simulations if simulations is not None else cfg.mcts.simulations
     num_actions = cfg.game.num_actions
+    reuse = cfg.mcts.reuse_tree
     games = [_Game(HexState.initial(cfg.game.board_size, cfg.game.swap_rule)) for _ in range(num_games)]
     samples: List[Sample] = []
 
@@ -55,7 +57,8 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
         active = [g for g in games if not g.done]
         if not active:
             break
-        roots = [mcts.make_root(g.state) for g in active]
+        # Reuse the subtree under the move we just played (carried on g.root); else start fresh.
+        roots = [(g.root if reuse and g.root is not None else mcts.make_root(g.state)) for g in active]
         mcts.run_batched(roots, evaluator, cfg, sims, add_noise, rng)
 
         for g, root in zip(active, roots):
@@ -65,11 +68,13 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
             temperature = cfg.selfplay.temperature if g.ply < cfg.selfplay.temperature_moves else 0.0
             action = mcts.select_action(root, num_actions, temperature, rng)
 
+            child = root.children.get(action) if reuse else None
             g.state = g.state.play(action)
             g.ply += 1
             if g.state.is_terminal():
                 g.done = True
                 g.winner = g.state.winner
+            g.root = child if (reuse and not g.done) else None
 
     for g in games:
         for planes, pi, to_move in g.history:

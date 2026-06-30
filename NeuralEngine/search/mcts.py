@@ -25,7 +25,7 @@ from hex.solver import maybe_solve
 
 class Node:
     __slots__ = ("state", "to_play", "expanded", "terminal", "solved_value", "solved_action",
-                 "num_actions", "priors", "child_n", "child_w", "children", "sum_n")
+                 "num_actions", "priors", "child_n", "child_w", "children", "sum_n", "sum_w")
 
     def __init__(self, state: HexState, num_actions: int) -> None:
         self.state = state
@@ -41,6 +41,7 @@ class Node:
         self.child_w = [0.0] * num_actions
         self.children: Dict[int, "Node"] = {}
         self.sum_n = 0
+        self.sum_w = 0.0   # sum of backed-up values (node.to_play perspective); for FPU
 
     def resolved(self) -> bool:
         """A node we never search below: a real terminal or an exactly solved position."""
@@ -51,15 +52,19 @@ def make_root(state: HexState) -> Node:
     return Node(state, state.size * state.size + 1)
 
 
-def _select(node: Node, c_puct: float) -> int:
+def _select(node: Node, c_puct: float, fpu: float) -> int:
     sqrt_total = math.sqrt(node.sum_n + 1)
     best_score = -1e30
     best_action = -1
     cn = node.child_n
     cw = node.child_w
+    # First-Play-Urgency: value to assume for not-yet-visited children. fpu<=0 keeps the legacy 0;
+    # fpu>0 estimates them from this node's mean value minus a reduction, so search exploits the
+    # policy's best moves before fanning out to unproven ones.
+    fpu_q = (node.sum_w / node.sum_n - fpu) if (fpu > 0.0 and node.sum_n > 0) else 0.0
     for action, prior in node.priors.items():
         n = cn[action]
-        q = (cw[action] / n) if n > 0 else 0.0
+        q = (cw[action] / n) if n > 0 else fpu_q
         u = c_puct * prior * sqrt_total / (1 + n)
         score = q + u
         if score > best_score:
@@ -101,11 +106,14 @@ def _backup(path: List[tuple], leaf_value: float) -> None:
         node.child_n[action] += 1
         node.child_w[action] += value
         node.sum_n += 1
+        node.sum_w += value
 
 
 def run_batched(roots: List[Node], evaluator, cfg, simulations: int, add_noise: bool, rng: np.random.Generator) -> None:
     """Run `simulations` PUCT simulations on each root, batching leaf network evaluations across roots."""
     num_actions = cfg.game.num_actions
+    c_puct = cfg.mcts.c_puct
+    fpu = cfg.mcts.fpu_reduction
     # Expand every root first (one batched evaluation), so PUCT has priors from move one.
     _ensure_expanded(roots, evaluator, cfg)
     if add_noise:
@@ -122,7 +130,7 @@ def run_batched(roots: List[Node], evaluator, cfg, simulations: int, add_noise: 
             node = root
             path: List[tuple] = []
             while node.expanded and not node.resolved():
-                action = _select(node, cfg.mcts.c_puct)
+                action = _select(node, c_puct, fpu)
                 if action not in node.children:
                     node.children[action] = Node(node.state.play(action), num_actions)
                 path.append((node, action))

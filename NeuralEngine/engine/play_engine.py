@@ -35,6 +35,11 @@ from net.evaluator import Evaluator
 from search import mcts
 
 CFG = load()
+# Virtual connection (bridge-as-safe-connection) is a play-strength feature, not a throughput cost
+# here — the engine searches one position at a time. Training presets may bake it off to save CPU;
+# default it back on for the engine unless the operator explicitly set USE_VC.
+if "USE_VC" not in os.environ:
+    CFG.mcts.use_virtual_connection = True
 _RNG = np.random.default_rng()
 _RNG_LOCK = threading.Lock()  # guards _RNG across concurrent MCTS searches
 EXECUTOR = ThreadPoolExecutor(max_workers=1)  # serialise heavy compute; keep the event loop free

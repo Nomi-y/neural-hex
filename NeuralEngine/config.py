@@ -142,6 +142,8 @@ class MctsConfig:
     solver_empty_threshold: int = _env_int("SOLVER_EMPTIES", 7, "mcts.solver_empty_threshold")
     solver_node_budget: int = _env_int("SOLVER_NODES", 200_000, "mcts.solver_node_budget")
     use_virtual_connection: bool = _env_bool("USE_VC", True, "mcts.use_virtual_connection")
+    fpu_reduction: float = _env_float("FPU", 0.0, "mcts.fpu_reduction")  # 0 disables FPU (legacy q=0)
+    reuse_tree: bool = _env_bool("REUSE_TREE", False, "mcts.reuse_tree")  # carry MCTS subtree across self-play moves
 
 
 @dataclass

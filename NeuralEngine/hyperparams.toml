@@ -115,7 +115,7 @@ backend_ws = "ws://localhost:3001"
   description = "RTX 5090 (32GB) + ~16 vCPU — bigger 128×12 net to use the idle GPU during CPU-bound self-play (fresh start; enable CUDA MPS on the host)"
   game = { board_size = 11 }
   net = { channels = 128, blocks = 12, use_se = true }
-  mcts = { simulations = 256, use_virtual_connection = false }
+  mcts = { simulations = 256, use_virtual_connection = false, fpu_reduction = 0.25, reuse_tree = true }
   selfplay = { parallel_games = 256 }
   train = { hours = 50.0, games_per_generation = 1536, train_steps_per_generation = 500, batch_size = 768, arena_games = 48, arena_simulations = 128 }
   device = "cuda"
