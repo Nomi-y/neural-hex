@@ -18,7 +18,7 @@ import numpy as np
 
 from config import Config
 from hex.board import HexState
-from net.model import build_net
+from net.model import build_net, CleanStateDict
 from net.evaluator import Evaluator
 from net.encoding import encode, real_to_canon_action
 from search import mcts
@@ -100,7 +100,8 @@ def build_eval_net(cfg: Config, np_state) -> Evaluator:
     if cfg.device == "cpu":
         torch.set_num_threads(1)  # each CPU worker is single-threaded; parallelism is across workers
     net = build_net(cfg).to(cfg.device)
-    net.load_state_dict({k: torch.from_numpy(v).to(cfg.device) for k, v in np_state.items()})
+    # np_state may carry torch.compile's '_orig_mod.' prefix; strip it so it loads into a plain net.
+    net.load_state_dict(CleanStateDict({k: torch.from_numpy(v).to(cfg.device) for k, v in np_state.items()}))
     net.eval()
     return Evaluator(net, cfg.device)
 

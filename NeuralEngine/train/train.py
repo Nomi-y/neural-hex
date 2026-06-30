@@ -27,7 +27,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import load, Config
-from net.model import build_net
+from net.model import build_net, BareModule, CleanStateDict
 from train.replay_buffer import ReplayBuffer
 from train import selfplay, arena
 from train.clock import log, set_start, offset_str
@@ -317,11 +317,15 @@ def main() -> None:
         except Exception as e:
             log(f"  torch.compile: skipped ({e})")
 
+    # Bare (uncompiled) view of the model: its state_dict has no '_orig_mod.' prefix,
+    # so checkpoints and weights shipped to workers load into plain nets.
+    bare = BareModule(net)
+
     optimizer = torch.optim.Adam(net.parameters(), lr=cfg.train.learning_rate,
                                   weight_decay=cfg.train.weight_decay)
     buffer = ReplayBuffer(cfg.train.replay_buffer_size, cfg.game.board_size)
     generation = 0
-    best_state = copy.deepcopy(net.state_dict())
+    best_state = copy.deepcopy(bare.state_dict())
 
     latest_path = os.path.join(cfg.train.checkpoint_dir, LATEST)
     best_path = os.path.join(cfg.train.checkpoint_dir, BEST)
@@ -332,8 +336,8 @@ def main() -> None:
         if not _validate_checkpoint_config(ckpt.get("config"), cfg):
             sys.exit(1)
 
-        net.load_state_dict(ckpt["model"])
-        best_state = ckpt.get("best", copy.deepcopy(net.state_dict()))
+        bare.load_state_dict(CleanStateDict(ckpt["model"]))
+        best_state = CleanStateDict(ckpt.get("best", copy.deepcopy(bare.state_dict())))
         optimizer.load_state_dict(ckpt["optimizer"])
         generation = ckpt["generation"]
 
@@ -394,7 +398,7 @@ def main() -> None:
                 f"vs current best…")
             ar_start = time.time()
             win_rate = arena.play_match_parallel(
-                cfg, net.state_dict(), best_state,
+                cfg, bare.state_dict(), best_state,
                 cfg.train.arena_games, cfg.train.arena_simulations,
                 base_seed=cfg.train.seed + generation * 1000 + 500,
                 progress=_throttled("arena", cfg.train.arena_games),
@@ -406,7 +410,7 @@ def main() -> None:
             # ── Promotion ────────────────────────────────────────────────
             promoted = win_rate >= cfg.train.arena_win_rate
             if promoted:
-                best_state = copy.deepcopy(net.state_dict())
+                best_state = copy.deepcopy(bare.state_dict())
                 _save(best_path, {"model": best_state, "config": _config_summary(cfg),
                                   "generation": generation})
                 log(f"[gen {generation}] PROMOTED — new best.pt at generation {generation}")
@@ -415,7 +419,7 @@ def main() -> None:
 
             # ── Checkpoint ───────────────────────────────────────────────
             _save(latest_path, {
-                "model": net.state_dict(),
+                "model": bare.state_dict(),
                 "best": best_state,
                 "optimizer": optimizer.state_dict(),
                 "generation": generation,
@@ -427,7 +431,7 @@ def main() -> None:
             if cfg.train.save_every_checkpoint:
                 gen_path = os.path.join(cfg.train.checkpoint_dir, f"gen_{generation:04d}.pt")
                 _save(gen_path, {
-                    "model": net.state_dict(),
+                    "model": bare.state_dict(),
                     "config": _config_summary(cfg),
                     "generation": generation,
                 })
@@ -449,7 +453,7 @@ def main() -> None:
     except KeyboardInterrupt:
         log("[train] interrupted — saving latest checkpoint")
         _save(latest_path, {
-            "model": net.state_dict(), "best": best_state, "optimizer": optimizer.state_dict(),
+            "model": bare.state_dict(), "best": best_state, "optimizer": optimizer.state_dict(),
             "generation": generation, "config": _config_summary(cfg),
             "buffer": buffer.state_dict(),
         })

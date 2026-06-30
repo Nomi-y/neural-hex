@@ -77,3 +77,24 @@ def build_net(cfg) -> HexNet:
         blocks=cfg.net.blocks,
         value_hidden=cfg.net.value_hidden,
     )
+
+
+_COMPILE_PREFIX = "_orig_mod."
+
+
+def BareModule(net):
+    """The underlying module, unwrapping torch.compile's OptimizedModule wrapper.
+
+    torch.compile returns a wrapper holding the real module in ._orig_mod and its
+    state_dict() keys gain an '_orig_mod.' prefix. Saving/serialising from the bare
+    module keeps weights loadable by a plain (uncompiled) net.
+    """
+    return getattr(net, "_orig_mod", net)
+
+
+def CleanStateDict(state: dict) -> dict:
+    """Strip torch.compile's '_orig_mod.' key prefix so weights load into a plain net."""
+    return {
+        (k[len(_COMPILE_PREFIX):] if k.startswith(_COMPILE_PREFIX) else k): v
+        for k, v in state.items()
+    }

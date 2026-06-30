@@ -30,7 +30,7 @@ import websockets
 
 from config import load
 from hex.board import HexState, RED, BLUE, EMPTY
-from net.model import HexNet
+from net.model import HexNet, CleanStateDict
 from net.evaluator import Evaluator
 from search import mcts
 
@@ -70,7 +70,7 @@ def load_engine(model_path: str, device: str):
     ckpt = torch.load(model_path, map_location=device, weights_only=False)
     c = ckpt["config"]
     net = HexNet(c["board_size"], c["in_planes"], c["channels"], c["blocks"], c["value_hidden"])
-    net.load_state_dict(ckpt["model"])
+    net.load_state_dict(CleanStateDict(ckpt["model"]))
     net.eval().to(device)
     print(f"[engine] loaded {model_path}: board={c['board_size']} net={c['channels']}x{c['blocks']} "
           f"generation={ckpt.get('generation', '?')} device={device}", flush=True)
