@@ -105,6 +105,36 @@ docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neur
 The container auto-detects docker vs podman. Logs are written to both stdout and the `logs/`
 directory (one file per run, timestamped) so you can review all generations later.
 
+## Deploy via GHCR (CI-built image)
+
+Instead of building locally and copying to the VPS, let GitHub Actions build the image and push
+it to the GitHub Container Registry (GHCR); the VPS just pulls it.
+
+**Build it** (`.github/workflows/build-image.yml`):
+
+- **Manual:** Actions → *Build and Push Image* → *Run workflow* → pick a preset (and CUDA on/off).
+- **Auto:** push to the `images` branch — builds `hyperparams.toml` exactly as committed.
+
+The chosen preset is baked into `hyperparams.toml` inside the image (via `.github/apply_preset.py`).
+Each build is pushed under three tags: `latest`, the preset name (or `images`), and `sha-<commit>`.
+
+**One-time setup — make the package public** (so the VPS can pull without a login):
+GitHub → your profile → *Packages* → `neural-hex` → *Package settings* → *Change visibility* → **Public**.
+(The image bakes in only `hyperparams.toml` — no secrets. Training credentials are passed at runtime.)
+
+**Pull and run on the VPS** (no `docker login` needed once the package is public):
+
+```bash
+docker pull ghcr.io/<owner>/neural-hex:latest    # <owner> lowercase, e.g. nomi-y
+mkdir -p checkpoints logs
+docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs \
+  ghcr.io/<owner>/neural-hex:latest
+# Pin a specific config:  ...neural-hex:cuda-affordable-11   (or :sha-<commit>)
+```
+
+If you keep the package private instead, log in first with a PAT that has `read:packages`:
+`echo "$GHCR_PAT" | docker login ghcr.io -u <owner> --password-stdin`.
+
 ## Train bare-metal (without Docker)
 
 ```bash

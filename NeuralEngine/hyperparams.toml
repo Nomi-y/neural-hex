@@ -59,7 +59,8 @@ move_budget_seconds = 5.0
 backend_ws = "ws://localhost:3001"
 
 # ============================================================================
-#  Hardware presets — applied at CI build time via PR body
+#  Hardware presets — pick one in the "Build and Push Image" workflow, or via
+#  ./build_container.sh --preset <name>. Applied in place at build time.
 # ============================================================================
 [presets.smoke]
   description = "Smoke run — verify the pipeline, NOT strength"
