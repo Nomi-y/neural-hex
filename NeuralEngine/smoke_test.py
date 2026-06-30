@@ -1,10 +1,15 @@
-"""Fast end-to-end sanity check — runs every component on a tiny board/net in seconds (CPU).
+"""Fast end-to-end sanity check — runs every component on a tiny board/net in seconds.
 
-Use it after setup, and after any change, before committing real compute on the VPS:
+Use it after any change, before committing:
     python smoke_test.py
 
 It exercises: the rules engine, bridges + endgame solver, encoding/canonicalisation, the network,
-batched MCTS, self-play sample generation, a few optimiser steps, an arena match, and analysis.
+batched MCTS, self-play sample generation, a few optimiser steps, and an arena match — on CPU.
+
+If a CUDA GPU is present it ALSO runs the GPU-only paths that CPU smoke can't reach (device-property
+logging, the arch/kernel guard, a real GPU forward, and self-play + arena through the GPU inference
+server) — run it on a CUDA box before committing. With no GPU (e.g. the Docker build host) the GPU
+section is skipped, so it stays a valid build-time guard.
 """
 
 import os
@@ -105,7 +110,46 @@ def main() -> None:
     print(f"  watchdog path returned {wr3:.0%} without hanging")
 
     print(f"  solver on a near-terminal position returned value={val} action={action}")
+
+    cuda_checks()
     print("SMOKE TEST PASSED")
+
+
+def cuda_checks() -> None:
+    """Exercise the GPU-only paths that never run under DEVICE=cpu, so bugs that only surface on a
+    real device are caught here — e.g. the `total_mem`/`total_memory` crash in _log_gpu_device, or a
+    torch wheel lacking the GPU's arch (cu121 on a Blackwell sm_120 5090, where cuda.is_available() is
+    True but every kernel fails). No-op (skips) when there's no GPU, so the Docker build guard is fine."""
+    if not torch.cuda.is_available():
+        print("  cuda: not available — GPU checks skipped")
+        return
+    from train.train import _assert_device_or_die, _log_gpu_device, _gpu_memory_str
+
+    _assert_device_or_die("cuda")   # arch/kernel usability — aborts loudly on an incompatible wheel
+    _log_gpu_device()               # the call that crashed in prod (total_mem -> total_memory)
+    mem = _gpu_memory_str()
+    if mem:
+        print(f"  cuda mem: {mem}")
+
+    cfg = load()
+    cfg.device = "cuda"
+    cfg.train.num_actors = 2
+    N = cfg.game.board_size
+
+    net = build_net(cfg).to("cuda").eval()
+    pol, val = Evaluator(net, "cuda").evaluate([HexState.initial(N, True)])
+    assert pol.shape[0] == 1 and val.shape[0] == 1, "cuda evaluator returned wrong shape"
+    print(f"  cuda evaluator ok (policy{tuple(pol.shape)} value{tuple(val.shape)})")
+
+    # Self-play + arena through the GPU inference server (on by default for cuda) — the deploy path.
+    sd = net.state_dict()
+    assert cfg.use_inference_server(), "inference server should be on for cuda by default"
+    par = selfplay.generate(cfg, sd, num_games=2, base_seed=10)
+    assert par, "cuda self-play via the inference server produced no samples"
+    wr = arena.play_match_parallel(cfg, sd, sd, num_games=2, simulations=8, base_seed=11)
+    assert 0.0 <= wr <= 1.0, "cuda arena via the inference server returned an invalid win rate"
+    print(f"  cuda inference-server: {len(par)} self-play samples, arena {wr:.0%}")
+    print("  CUDA CHECKS PASSED")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ IMAGE="neuralengine"
 PRESET=""
 CUDA=false
 CUDA_WHEEL="cu121"
+CUDA_WHEEL_SET=false
 LIST_PRESETS=false
 DRY_RUN=false
 
@@ -49,7 +50,7 @@ while [ $# -gt 0 ]; do
     --cuda)
       CUDA=true; shift ;;
     --cuda-wheel)
-      CUDA_WHEEL="$2"; CUDA=true; shift 2 ;;
+      CUDA_WHEEL="$2"; CUDA_WHEEL_SET=true; CUDA=true; shift 2 ;;
     --list-presets)
       LIST_PRESETS=true; shift ;;
     --dry-run)
@@ -60,6 +61,12 @@ while [ $# -gt 0 ]; do
       echo "Unknown argument: $1  (use --help)" >&2; exit 2 ;;
   esac
 done
+
+# Blackwell (RTX 5090, sm_120) has no kernels in cu121 — force cu128 unless overridden.
+if [ "$PRESET" = "cuda-5090" ] && ! $CUDA_WHEEL_SET; then
+  CUDA_WHEEL="cu128"; CUDA=true
+  echo "note: cuda-5090 preset → using CUDA_WHEEL=cu128 (Blackwell sm_120)"
+fi
 
 # ── List presets ────────────────────────────────────────────────────────────
 

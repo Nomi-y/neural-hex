@@ -65,7 +65,7 @@ def _log_gpu_device() -> None:
         return
     for i in range(torch.cuda.device_count()):
         p = torch.cuda.get_device_properties(i)
-        total_gb = p.total_mem / (1024 ** 3)
+        total_gb = p.total_memory / (1024 ** 3)
         log(f"  cuda:{i}  {p.name}  {total_gb:.1f}GB  compute {p.major}.{p.minor}")
 
 
@@ -88,6 +88,36 @@ def _gpu_hardware_present() -> bool:
     return False
 
 
+def _assert_cuda_usable() -> None:
+    """torch.cuda.is_available() can be True yet every kernel fail — e.g. a cu121 wheel on a
+    Blackwell sm_120 GPU (RTX 5090): the arch isn't in the wheel's kernel list, so the real launch
+    dies with 'no kernel image is available'. Force a tiny real conv now and, if it fails, abort with
+    a rebuild hint instead of crashing deep in self-play."""
+    try:
+        import torch.nn.functional as F
+        x = torch.zeros(1, 1, 4, 4, device="cuda")
+        w = torch.zeros(1, 1, 3, 3, device="cuda")
+        F.conv2d(x, w).sum().item()  # launch + sync; raises here if the arch is unsupported
+    except Exception as exc:
+        try:
+            archs = ", ".join(torch.cuda.get_arch_list())
+            name = torch.cuda.get_device_name(0)
+            cc = torch.cuda.get_device_capability(0)
+            gpu = f"{name} (sm_{cc[0]}{cc[1]})"
+        except Exception:
+            archs, gpu = "?", "?"
+        log("=" * 60)
+        log("FATAL: CUDA is available but this torch wheel has no kernels for the GPU's architecture.")
+        log(f"  GPU: {gpu}   wheel supports: {archs}")
+        log(f"  ({type(exc).__name__}: {exc})")
+        log("  Rebuild the image with a CUDA wheel that covers this GPU:")
+        log("    • Blackwell (RTX 5090/B200, sm_120) needs cu128 — ./build_container.sh --cuda --cuda-wheel cu128")
+        log("      (or set the CI 'cuda_wheel' input to cu128).")
+        log("  To intentionally train on CPU instead, set  ALLOW_CPU=1  with DEVICE=cpu.")
+        log("=" * 60)
+        raise SystemExit(1)
+
+
 def _assert_device_or_die(device: str) -> None:
     """Refuse to silently train on CPU when a GPU is physically present — that almost
     always means the image's CUDA wheel is newer than the host driver (e.g. a RunPod
@@ -96,6 +126,7 @@ def _assert_device_or_die(device: str) -> None:
     # device=cuda but torch can't actually use it (e.g. wheel newer than driver):
     # fail with the same actionable message instead of crashing deep in training.
     if device == "cuda" and torch.cuda.is_available():
+        _assert_cuda_usable()  # is_available() True is not enough — verify kernels actually run
         return
     if device != "cuda":
         if os.environ.get("ALLOW_CPU", "").lower() in ("1", "true", "yes"):

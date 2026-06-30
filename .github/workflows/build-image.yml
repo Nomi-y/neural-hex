@@ -77,6 +77,11 @@ jobs:
           [ -z "$CUDA" ] && CUDA="true"
           CUDA_WHEEL="${{ github.event.inputs.cuda_wheel }}"
           [ -z "$CUDA_WHEEL" ] && CUDA_WHEEL="cu121"
+          # Blackwell (RTX 5090, sm_120) has no kernels in cu121 — force cu128 unless overridden.
+          if [ "$PRESET" = "cuda-5090" ] && [ "$CUDA_WHEEL" = "cu121" ]; then
+            CUDA_WHEEL="cu128"
+            echo "note: cuda-5090 preset → forcing CUDA_WHEEL=cu128 (Blackwell sm_120)"
+          fi
 
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           IMAGE="ghcr.io/${OWNER}/neural-hex"

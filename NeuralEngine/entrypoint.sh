@@ -37,7 +37,7 @@ fi
 # ── Log GPU properties (best-effort, nvidia-smi may not be in the image) ───
 if command -v nvidia-smi &>/dev/null; then
   echo "[entrypoint] GPU info:"
-  nvidia-smi --query-gpu=name,memory.total,driver_version,cuda_version --format=csv,noheader 2>/dev/null || true
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || true
   echo "[entrypoint] GPU memory:"
   nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader 2>/dev/null || true
 else
@@ -47,7 +47,7 @@ import torch
 if torch.cuda.is_available():
     for i in range(torch.cuda.device_count()):
         p = torch.cuda.get_device_properties(i)
-        print(f'[entrypoint] CUDA device {i}: {p.name}  VRAM={p.total_mem//(1024**3):.0f}GB  cuda={p.major}.{p.minor}')
+        print(f'[entrypoint] CUDA device {i}: {p.name}  VRAM={p.total_memory//(1024**3):.0f}GB  cuda={p.major}.{p.minor}')
 else:
     print('[entrypoint] CUDA not available — running on CPU')
 " 2>/dev/null || true
