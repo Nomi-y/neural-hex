@@ -38,6 +38,26 @@ _STOP = "__STOP__"  # sentinel pushed onto the request queue to end the server l
 _RESULT_TIMEOUT_S = float(os.environ.get("INFERENCE_RESULT_TIMEOUT", "300"))
 
 
+def _ts() -> str:
+    """Timestamp prefix matching train.clock.log() format: [HH:MM:SS +offset].
+
+    Reads TRAIN_START_EPOCH from the environment (set by train.py) so the offset
+    is consistent with all other log lines. Falls back to bare [HH:MM:SS] when
+    the env var is unavailable (e.g. running standalone tests)."""
+    now = time.strftime("%H:%M:%S")
+    start_raw = os.environ.get("TRAIN_START_EPOCH")
+    if start_raw:
+        try:
+            start = float(start_raw)
+            elapsed = int(max(0, time.time() - start))
+            h, rem = divmod(elapsed, 3600)
+            m, s = divmod(rem, 60)
+            return f"[{now} +{h}:{m:02d}:{s:02d}]"
+        except (ValueError, TypeError):
+            pass
+    return f"[{now}]"
+
+
 class RemoteEvaluator:
     """Worker-side stand-in for net.evaluator.Evaluator, bound to one net_id on the server.
 
@@ -93,8 +113,8 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         net.eval()
         nets.append(net)
 
-    report_every = float(os.environ.get("INFERENCE_LOG_EVERY", "10"))
-    print(f"[infer] server ready on {device}: {len(nets)} net(s), max_batch={max_batch}, "
+    report_every = float(os.environ.get("INFERENCE_LOG_EVERY", "30"))
+    print(f"{_ts()} [infer] server ready on {device}: {len(nets)} net(s), max_batch={max_batch}, "
           f"heartbeat every {report_every:.0f}s", flush=True)
     n_batches = n_leaves = max_seen = 0
     last_report = time.time()
@@ -149,7 +169,8 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         now = time.time()
         if now - last_report >= report_every:
             dt = now - last_report
-            print(f"[infer] {n_batches} batches, {n_leaves / max(1, n_batches):.0f} avg leaves/batch, "
+            print(f"{_ts()} [infer] {n_batches} batches, "
+                  f"{n_leaves / max(1, n_batches):.0f} avg leaves/batch, "
                   f"{n_leaves / dt:.0f} leaves/s, peak batch {max_seen}", flush=True)
             n_batches = n_leaves = max_seen = 0
             last_report = now

@@ -156,6 +156,14 @@ seed = 0
 # OOM path — each worker is its own CUDA context (~0.5GB+) — so only with a tiny NUM_ACTORS.
 num_actors = 0
 
+[logging]
+# [HW_LOG_INTERVAL] Seconds between [hw] hardware-utilisation snapshots (GPU%, VRAM, CPU%, RAM).
+# 0 disables. 30–120; 60 (once per minute) is a good default for long runs.
+util_interval = 60.0
+# [INFERENCE_LOG_EVERY] Seconds between [infer] server heartbeat lines (batches, leaves/s,
+# avg/peak batch size). 10–60; 30 is a readable default.
+infer_heartbeat = 30.0
+
 [engine]
 # The deployed play/analysis engine (engine.play_engine), separate from the training loop above.
 # [ENGINE_SIMS] MCTS sims per move when the engine plays or analyses. Higher = stronger & slower.

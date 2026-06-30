@@ -30,7 +30,8 @@ from config import load, Config, available_cpus
 from net.model import build_net, BareModule, CleanStateDict
 from train.replay_buffer import ReplayBuffer
 from train import selfplay, arena
-from train.clock import log, set_start, offset_str
+from train.clock import log, set_start, offset_str, set_gen
+from train.hardware_monitor import HardwareMonitor
 
 LATEST = "latest.pt"
 BEST = "best.pt"
@@ -391,6 +392,17 @@ def main() -> None:
 
     set_start()
 
+    # Thread the logging config through to the inference server subprocess
+    # (env vars are inherited by mp.Process).
+    os.environ["INFERENCE_LOG_EVERY"] = str(cfg.logging.infer_heartbeat)
+    os.environ["TRAIN_START_EPOCH"] = str(time.time())
+
+    # Background hardware-utilisation logger (GPU%, CPU%, RAM, VRAM).
+    hw_monitor = None
+    if cfg.logging.util_interval > 0:
+        hw_monitor = HardwareMonitor(cfg.logging.util_interval)
+        hw_monitor.start()
+
     # Log the full config at startup so the user can see what's active
     budget_s = cfg.train.hours * 3600
     log("=" * 60)
@@ -489,10 +501,11 @@ def main() -> None:
     try:
         while time.time() - start < budget_s:
             generation += 1
+            set_gen(generation)
             gen_start = time.time()
 
             # ── Self-play ────────────────────────────────────────────────
-            log(f"[gen {generation}] self-play: {cfg.train.games_per_generation} games "
+            log(f"self-play: {cfg.train.games_per_generation} games "
                 f"@ {cfg.mcts.simulations} sims on {cfg.resolve_actors()} actor(s)…")
             sp_start = time.time()
             samples = selfplay.generate(
@@ -503,17 +516,17 @@ def main() -> None:
             buffer.extend(samples)
             sp_dt = time.time() - sp_start
             mem = _gpu_memory_str()
-            log(f"[gen {generation}] self-play done in {offset_str(sp_dt)} "
+            log(f"self-play done in {offset_str(sp_dt)} "
                 f"({len(samples)} samples, {len(samples) / max(1e-9, sp_dt):.0f} samples/s, "
                 f"buffer {len(buffer)}/{buffer.capacity}"
                 + (f", {mem}" if mem else "") + ")")
             if len(buffer) < cfg.train.batch_size:
-                log(f"[gen {generation}] buffer warming ({len(buffer)}/{cfg.train.batch_size}) "
+                log(f"buffer warming ({len(buffer)}/{cfg.train.batch_size}) "
                     f"— skipping train/arena")
                 continue
 
             # ── Training ─────────────────────────────────────────────────
-            log(f"[gen {generation}] training {cfg.train.train_steps_per_generation} steps "
+            log(f"training {cfg.train.train_steps_per_generation} steps "
                 f"(batch {cfg.train.batch_size}, clip={cfg.train.grad_clip}, "
                 f"schedule={cfg.train.lr_schedule})…")
             tr_start = time.time()
@@ -521,12 +534,12 @@ def main() -> None:
                 net, optimizer, buffer, cfg, rng, device, generation)
             tr_dt = time.time() - tr_start
             mem = _gpu_memory_str()
-            log(f"[gen {generation}] training done in {offset_str(tr_dt)} "
+            log(f"training done in {offset_str(tr_dt)} "
                 f"(ploss={policy_loss:.3f} vloss={value_loss:.3f} total={total_loss:.3f}"
                 + (f", {mem}" if mem else "") + ")")
 
             # ── Arena ────────────────────────────────────────────────────
-            log(f"[gen {generation}] arena: {cfg.train.arena_games} games "
+            log(f"arena: {cfg.train.arena_games} games "
                 f"@ {cfg.train.arena_simulations} sims on {cfg.resolve_actors()} actor(s) "
                 f"vs current best…")
             ar_start = time.time()
@@ -538,7 +551,7 @@ def main() -> None:
             )
             ar_dt = time.time() - ar_start
             mem = _gpu_memory_str()
-            log(f"[gen {generation}] arena done in {offset_str(ar_dt)} "
+            log(f"arena done in {offset_str(ar_dt)} "
                 f"(candidate win rate {win_rate:.0%}, threshold {cfg.train.arena_win_rate:.0%}"
                 + (f", {mem}" if mem else "") + ")")
 
@@ -548,9 +561,9 @@ def main() -> None:
                 best_state = copy.deepcopy(bare.state_dict())
                 _save(best_path, {"model": best_state, "config": _config_summary(cfg),
                                   "generation": generation})
-                log(f"[gen {generation}] PROMOTED — new best.pt at generation {generation}")
+                log(f"PROMOTED — new best.pt at generation {generation}")
             else:
-                log(f"[gen {generation}] kept current best (win rate {win_rate:.0%} < {cfg.train.arena_win_rate:.0%})")
+                log(f"kept current best (win rate {win_rate:.0%} < {cfg.train.arena_win_rate:.0%})")
 
             # ── Checkpoint ───────────────────────────────────────────────
             _save(latest_path, {
@@ -579,7 +592,7 @@ def main() -> None:
             avg_gen = sum(gen_times) / len(gen_times)
             eta_gens = int(remaining // avg_gen) if avg_gen > 0 else 0
             log(
-                f"[gen {generation}] DONE samples={len(samples)} buffer={len(buffer)} "
+                f"DONE samples={len(samples)} buffer={len(buffer)} "
                 f"ploss={policy_loss:.3f} vloss={value_loss:.3f} arena={win_rate:.0%} "
                 f"{'PROMOTED' if promoted else 'kept'} gen_time={offset_str(gen_dt)} "
                 f"elapsed={offset_str(elapsed)} remaining={offset_str(remaining)} "
@@ -592,6 +605,10 @@ def main() -> None:
             "generation": generation, "config": _config_summary(cfg),
             "buffer": buffer.state_dict(),
         })
+    finally:
+        if hw_monitor is not None:
+            hw_monitor.stop()
+        set_gen(None)  # clear generation context
 
     log(f"[train] done at generation {generation} after {offset_str(time.time() - start)}; "
         f"best -> {best_path}")

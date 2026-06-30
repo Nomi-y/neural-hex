@@ -34,6 +34,23 @@ def offset_str(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{sec:02d}"
 
 
-def log(msg: str) -> None:
+_GEN: int | None = None  # current generation, set by main loop; None = outside gen context
+
+
+def set_gen(gen: int | None) -> None:
+    global _GEN
+    _GEN = gen
+
+
+def log(msg: str, gen: int | None = None) -> None:
+    """Timestamped log line: [HH:MM:SS +offset] [gen N] msg.
+
+    If `gen` is not passed, falls back to the module-level `_GEN` (set by the main loop).
+    When neither is set, the [gen N] segment is omitted so startup/shutdown lines stay compact.
+    """
     now = time.strftime("%H:%M:%S")
-    print(f"[{now} +{offset_str(time.time() - _START)}] {msg}", flush=True)
+    gen = gen if gen is not None else _GEN
+    prefix = f"[{now} +{offset_str(time.time() - _START)}]"
+    if gen is not None:
+        prefix += f" [gen {gen}]"
+    print(f"{prefix} {msg}", flush=True)

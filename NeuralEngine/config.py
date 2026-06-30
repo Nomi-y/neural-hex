@@ -244,6 +244,19 @@ class EngineConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """Hardware-utilisation and inference-server heartbeat logging.
+
+    `util_interval` controls how often [hw] snapshots are logged (default 60s);
+    set 0 to disable. `infer_heartbeat` controls the inference server's own
+    throughput report interval (default 30s). Both are overridable at runtime via
+    env vars HW_LOG_INTERVAL / INFERENCE_LOG_EVERY, so a baked image can still
+    be tuned without a rebuild."""
+    util_interval: float = _env_float("HW_LOG_INTERVAL", 60.0, "logging.util_interval")
+    infer_heartbeat: float = _env_float("INFERENCE_LOG_EVERY", 30.0, "logging.infer_heartbeat")
+
+
+@dataclass
 class Config:
     game: GameConfig = field(default_factory=GameConfig)
     net: NetConfig = field(default_factory=NetConfig)
@@ -251,6 +264,7 @@ class Config:
     selfplay: SelfPlayConfig = field(default_factory=SelfPlayConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     device: str = field(default_factory=_detect_device)
 
     def resolve_actors(self) -> int:
