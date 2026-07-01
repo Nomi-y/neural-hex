@@ -29,10 +29,11 @@ on:
         type: boolean
         default: true
       cuda_wheel:
-        description: "CUDA wheel — pin <= the LOWEST host driver's CUDA (cu121 fleet-safe; cu128 for Blackwell 5090)"
+        description: "CUDA wheel — 'default' picks the safe fleet value (cu121) or the preset's override (cu128 for cuda-5090)"
         type: choice
-        default: cu121
+        default: default
         options:
+          - default
           - cu121
           - cu118
           - cu124
@@ -77,6 +78,7 @@ jobs:
           [ -z "$CUDA" ] && CUDA="true"
           CUDA_WHEEL="${{ github.event.inputs.cuda_wheel }}"
           [ -z "$CUDA_WHEEL" ] && CUDA_WHEEL="cu121"
+          [ "$CUDA_WHEEL" = "default" ] && CUDA_WHEEL="cu121"
           # Blackwell (RTX 5090, sm_120) has no kernels in cu121 — force cu128 unless overridden.
           if [ "$PRESET" = "cuda-5090" ] && [ "$CUDA_WHEEL" = "cu121" ]; then
             CUDA_WHEEL="cu128"
