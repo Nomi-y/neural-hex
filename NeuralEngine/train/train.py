@@ -252,19 +252,22 @@ def _weight_stats(net: torch.nn.Module) -> dict:
     w_mean, w_std = 0.0, 0.0
     g_norm = 0.0
     total = 0
+    std_total = 0
     g_sq = 0.0
     for p in net.parameters():
         if not p.requires_grad:
             continue
         w = p.detach().float()
         w_mean += float(w.mean().item())
-        w_std += float(w.std().item())
+        if w.numel() >= 2:
+            w_std += float(w.std().item())
+            std_total += 1
         total += 1
         if p.grad is not None:
             g_sq += float((p.grad.detach().float() ** 2).sum().item())
     if total > 0:
         w_mean /= total
-        w_std /= total
+        w_std /= max(1, std_total)
     g_norm = math.sqrt(g_sq)
     return {"w_mean": w_mean, "w_std": w_std, "g_norm": g_norm}
 

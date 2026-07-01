@@ -240,5 +240,5 @@ backend_ws = "ws://localhost:3001"
   net = { channels = 256, blocks = 20, use_se = true, value_hidden = 256 }
   mcts = { simulations = 400, use_virtual_connection = true, fpu_reduction = 0.25, reuse_tree = true }
   selfplay = { parallel_games = 512 }
-  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 500, batch_size = 2048, replay_buffer_size = 500000, arena_games = 48, arena_simulations = 128 }
+  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 1000, batch_size = 2048, replay_buffer_size = 500000, arena_games = 48, arena_simulations = 128 }
   device = "cuda"
