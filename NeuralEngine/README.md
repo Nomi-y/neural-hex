@@ -13,20 +13,80 @@ packaged as a container image you run on a rented GPU box (e.g. RunPod) — see 
 > PascalCase — the project conventions describe the TypeScript codebase. The Hex *rules* here mirror the
 > backend exactly so the engine plays the identical game.
 
-## How it works
+## How it works — the training loop
 
-Standard AlphaZero loop, sized for "a couple of hours" of compute:
+The AlphaZero loop runs for a fixed wall-clock budget (`TRAIN_HOURS`, default 50 h),
+checkpointing after every generation so it can be stopped and resumed at any time.
 
-1. **Self-play** — the current *best* network plays games against itself; PUCT MCTS (policy priors +
-   value estimate, Dirichlet root noise, temperature) produces a search policy at each move. Every
-   position is stored as `(planes, MCTS policy, eventual result)`. Every game plays to the last stone
-   (no early resignation — all data is used).
-2. **Train** — the network learns to predict the MCTS policy (cross-entropy) and the game result
-   (value MSE) from a replay buffer of recent games. Uses **AMP mixed precision** and
-   **torch.compile** on CUDA for fast training.
-3. **Arena gate** — the freshly trained network only becomes the new *best* (and thus the self-play
-   generator) if it beats the incumbent over a set of games. This is the "reward-based evolution".
-4. Repeat until the time budget elapses, checkpointing throughout.
+### Generation cycle
+
+Each generation has three phases:
+
+```
+┌─ self-play ───────────────┐  ┌─ train ──┐  ┌─ arena ──┐
+│  768 games × 400 sims      │  │  1000 steps  │  48 games  │
+│  ~15 workers × 34 games    │  │  batch 2048  │  vs best   │
+│  → ~72K samples            │  │  ~3 min      │  ~1 min    │
+└────────────────────────────┘  └─────────────┘  └───────────┘
+         ~30 min                    replay           promotion
+                                    buffer           gate (>55%)
+```
+
+### 1. Self-play — CPU search, GPU leaf evaluation
+
+**Architecture**: many CPU worker processes do MCTS tree search; **one GPU inference
+server** per GPU hosts the network and batches leaf evaluations from all workers.
+One CUDA context regardless of worker count — no per-worker OOM.
+
+**Streaming**: workers maintain ~34 concurrent games each (≈ `parallel_games / actors`).
+When a game finishes, a new seed is atomically claimed from a shared pool — the GPU
+stays fed with a constant-size batch of leaves for the entire generation.  No
+decline as games complete.
+
+**Leaves vs. samples**: a *leaf* is one network evaluation during search
+(plane encoding → forward pass → policy + value).  The `[infer]` heartbeat logs
+leaves/second.  A *sample* is a completed training datum: `(board position,
+MCTS policy distribution, game outcome ±1)`, stored in the replay buffer.
+
+**Multi-GPU**: auto-detected via `torch.cuda.device_count()`.  One inference
+server spawns per GPU (`cuda:0`, `cuda:1`, …).  Workers are sharded round-robin.
+
+### 2. Training — gradient descent on replay buffer
+
+The network (residual ConvNet, 256ch × 20 blocks + squeeze-excitation, 24.3M params
+on the cuda-5090 preset) learns from the last 500K positions:
+
+| Component | Detail |
+|---|---|
+| Loss | policy cross-entropy + value MSE (weight 1.0) |
+| Optimizer | Adam, lr=1e-3, weight_decay=1e-4, grad_clip=1.0 |
+| Schedule | cosine decay to lr_min=1e-5, 100-step warmup |
+| Speedups | AMP mixed precision, torch.compile (Triton JIT), TF32 |
+
+Timer-based progress logging (`TRAIN_LOG_INTERVAL`, default 120 s) so you always
+see progress regardless of step count.
+
+### 3. Arena — candidate vs. incumbent gating
+
+The freshly trained candidate plays 48 games (128 sims/move) against the current
+best network.  Must win ≥55% to be promoted.  Both nets run on the same inference
+server; each GPU hosts its own copy of both nets in multi-GPU mode.
+
+### Log format
+
+Every line follows `[HH:MM:SS +offset] [gen N] [tag] message`:
+
+| Tag | Source | Content |
+|---|---|---|
+| `[train]` | `train.py` | Phase headers, steps, loss, weight stats, errors |
+| `[selfplay]` | `selfplay.py` | Fan-out, progress, phase times, warnings |
+| `[arena]` | `arena.py` | Fan-out, progress, promotion/keep decisions |
+| `[infer]` | inference server | Batches, avg/peak batch size, leaves/s |
+| `[hw]` | hardware monitor | GPU%, VRAM, CPU%, RAM (60 s averages) |
+| `[summary]` | `train.py` | Per-generation DONE rollup |
+
+Parse with `./training_summary.sh train.log` → Markdown report with hardware
+timeline, inference throughput, and per-generation table.
 
 ### The directive's "built-in features"
 
@@ -203,21 +263,18 @@ The training loop automatically enables these on CUDA (no config needed):
 - **Non-blocking transfers** — async CPU→GPU data movement (overlaps compute with transfer).
 - **MCTS Node arrays** — fixed-size arrays instead of Python dicts for faster selection/backup.
 - **GPU softmax** — evaluator keeps softmax on GPU instead of a Python loop.
-- **Work-stealing chunks** — 2–3× more self-play chunks than workers so fast cores grab extra work.
 
-### Self-play: CPU search workers + one GPU inference server
+### Self-play: streaming workers + GPU inference server
 
-Self-play here is **CPU-bound** — MCTS pegs the cores while each network forward pass is tiny. The
-naive "put the net on the GPU in every worker" approach creates one CUDA context per worker
-(~0.5 GB+ each), so with ≈ one worker per core it OOMs any card (even 80 GB) the moment you run on a
-high-vCPU box. Two ways to avoid that, selected automatically:
+Workers maintain a constant pool of concurrent games (~34 each, totalling
+`parallel_games` across all workers).  When any game finishes the worker
+atomically claims the next seed from a shared pool and starts a fresh game
+in that slot — the GPU sees a steady stream of leaf evaluations with no
+decline as individual games complete.
 
-- **CUDA (default): one inference server.** A single GPU process hosts the net(s); the many CPU
-  workers do tree search and ship leaf positions to it, which **batches the forward across all
-  workers**. One CUDA context (no OOM), and the network forward runs on the otherwise-idle GPU so
-  cores stay on search. Arena's two nets (candidate, best) are served by the same process.
-- **CPU fallback.** Set **`INFERENCE_SERVER=0`** and workers evaluate the (small) net on CPU while
-  the GPU is used only for the training step. Robust and simple; slightly more CPU per worker.
+Multi-GPU: one inference server per GPU.  Workers are sharded round-robin;
+each GPU hosts its own copy of the net(s).  Arena's candidate + best nets
+run on every GPU.
 
 Knobs (all env, so they work with baked images):
 
@@ -225,12 +282,8 @@ Knobs (all env, so they work with baked images):
 |-----|---------|---------|
 | `INFERENCE_SERVER` | on for CUDA | `0`/`1` — GPU inference server vs per-worker CPU eval. |
 | `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server coalesces into one forward (bounds VRAM). |
-| `INFERENCE_RESULT_TIMEOUT` | 300 | Seconds a worker waits for a server result before erroring (dead-server guard). |
-| `SELFPLAY_DEVICE` | cpu (CUDA box) | Worker eval device when the server is **off**. |
-| `NUM_ACTORS` | cores − 1 | Self-play / arena worker processes. |
-
-> The proper scaling path is the inference server; `SELFPLAY_DEVICE=cuda` (per-worker GPU eval) is
-> only sane with a tiny `NUM_ACTORS` and is superseded by the server. CUDA MPS is no longer required.
+| `NUM_ACTORS` | cores − 2 | Self-play / arena worker processes. |
+| `NUM_GPUS` | auto | Number of GPUs to use (auto = `torch.cuda.device_count()`). |
 
 ## Key configuration (hyperparams.toml)
 
