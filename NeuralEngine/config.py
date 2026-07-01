@@ -245,15 +245,12 @@ class EngineConfig:
 
 @dataclass
 class LoggingConfig:
-    """Hardware-utilisation and inference-server heartbeat logging.
-
-    `util_interval` controls how often [hw] snapshots are logged (default 60s);
-    set 0 to disable. `infer_heartbeat` controls the inference server's own
-    throughput report interval (default 30s). Both are overridable at runtime via
-    env vars HW_LOG_INTERVAL / INFERENCE_LOG_EVERY, so a baked image can still
-    be tuned without a rebuild."""
+    """Logging intervals — all env-overridable, all in hyperparams.toml [logging].
+    No preset overrides for these; they're runtime-tuning knobs, not hardware-specific."""
     util_interval: float = _env_float("HW_LOG_INTERVAL", 60.0, "logging.util_interval")
     infer_heartbeat: float = _env_float("INFERENCE_LOG_EVERY", 30.0, "logging.infer_heartbeat")
+    selfplay_progress_interval: float = _env_float("SELFPLAY_PROGRESS_INTERVAL", 30.0, "logging.selfplay_progress_interval")
+    train_log_interval: float = _env_float("TRAIN_LOG_INTERVAL", 120.0, "logging.train_log_interval")
 
 
 @dataclass

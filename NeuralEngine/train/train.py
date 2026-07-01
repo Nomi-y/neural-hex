@@ -400,9 +400,11 @@ def main() -> None:
 
     set_start()
 
-    # Thread the logging config through to the inference server subprocess
+    # Thread the logging config through to subprocesses
     # (env vars are inherited by mp.Process).
     os.environ["INFERENCE_LOG_EVERY"] = str(cfg.logging.infer_heartbeat)
+    os.environ["SELFPLAY_PROGRESS_INTERVAL"] = str(cfg.logging.selfplay_progress_interval)
+    os.environ["TRAIN_LOG_INTERVAL"] = str(cfg.logging.train_log_interval)
     os.environ["TRAIN_START_EPOCH"] = str(time.time())
 
     # Background hardware-utilisation logger (GPU%, CPU%, RAM, VRAM).

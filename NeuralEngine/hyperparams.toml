@@ -162,7 +162,13 @@ num_actors = 0
 util_interval = 60.0
 # [INFERENCE_LOG_EVERY] Seconds between [infer] server heartbeat lines (batches, leaves/s,
 # avg/peak batch size). 10–60; 30 is a readable default.
-infer_heartbeat = 60.0
+infer_heartbeat = 30.0
+# [SELFPLAY_PROGRESS_INTERVAL] Seconds between [selfplay] progress lines during streaming
+# self-play (N/768 games completed so far).  15–120; 30 is a good default.
+selfplay_progress_interval = 30.0
+# [TRAIN_LOG_INTERVAL] Seconds between [train] progress lines during gradient descent.
+# 60–300; 120 (2 minutes) is a good default.
+train_log_interval = 120.0
 
 [engine]
 # The deployed play/analysis engine (engine.play_engine), separate from the training loop above.
