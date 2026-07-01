@@ -286,6 +286,9 @@ def cuda_training_loops(generations: int = 2) -> None:
             **os.environ,
             "DEVICE": "cuda",
             "BOARD_SIZE": "5", "NET_CHANNELS": "16", "NET_BLOCKS": "2",
+            # Separate policy/value trunks + weighted value loss — the value-head fix.
+            # Exercised here so the two-tower forward/save/resume path can't silently regress.
+            "NET_POLICY_BLOCKS": "2", "NET_VALUE_BLOCKS": "1", "VALUE_LOSS_WEIGHT": "3.0",
             "NET_SE": "false", "NET_VALUE_HIDDEN": "32",
             "MCTS_SIMS": "12", "PARALLEL_GAMES": "8", "PIPELINE_SHARDS": "2",
             "NUM_ACTORS": "2", "GAMES_PER_GEN": "8", "BATCH_SIZE": "32",
@@ -314,6 +317,8 @@ def cuda_training_loops(generations: int = 2) -> None:
     done = [ln for ln in log_lines if "[summary] DONE" in ln]
     assert len(done) >= generations, f"expected {generations} generation summaries, got {len(done)}"
     assert any("pipeline" in ln for ln in log_lines), "self-play fan-out never reported the pipeline"
+    assert any("separate trunks" in ln for ln in log_lines), \
+        "separate policy/value trunks never reported — the value-head fix path was not exercised"
 
     # Progress dedupe: at most one [selfplay] N/total progress line per second (interval=1s here),
     # not one per worker — a decent proxy for the fan-out no longer being actors× too chatty.
