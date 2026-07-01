@@ -437,7 +437,8 @@ def main() -> None:
         f"buffer={cfg.train.replay_buffer_size}")
     log(f"[train]   optimizer = lr={cfg.train.learning_rate}  wd={cfg.train.weight_decay}  "
         f"clip={cfg.train.grad_clip}  schedule={cfg.train.lr_schedule}  "
-        f"lr_min={cfg.train.lr_min}  warmup={cfg.train.lr_warmup_steps}")
+        f"lr_min={cfg.train.lr_min}  warmup={cfg.train.lr_warmup_steps}  "
+        f"vloss_w={cfg.train.value_loss_weight}")
     log(f"[train]   arena     = {cfg.train.arena_games} games @ {cfg.train.arena_simulations} sims  "
         f"threshold={cfg.train.arena_win_rate:.0%}")
     _selfplay_eval = f"gpu-server({device})" if cfg.use_inference_server() else cfg.worker_eval_device()
