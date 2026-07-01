@@ -7,6 +7,7 @@ __pycache__/
 checkpoints/*.pt
 checkpoints/*.tmp
 logs/
+training_summary.md
 
-# Engine credentials — never commit the token (see run_engine.sh / README)
+# Engine credentials — never commit the token (see README)
 engine.env

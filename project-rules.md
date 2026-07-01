@@ -103,7 +103,8 @@ After a meaningful change (a feature, behaviour change, or notable fix),
 | `summary.txt` | **Iteration history.** What was built and *why*. Read the last iteration first. |
 | `CLAUDE.md` | Thin session loader — imports this file. |
 | `coding-conventions.md` | Thin pointer back to this file. |
-| `additions.md`, `todos*.md`, `prompt.md`, `questions.md` | Planning notes / requested work, oldest→newest. **The newest is the active spec.** |
+| `planning/` | **Archived planning docs** (`todos*`, `additions`, `prompt`, `questions`, `engine`, `frontend`, `match-history`, `neural-network`) — implemented game specs, oldest→newest. Historical; the durable record is `summary.txt`. The SessionStart hook still surfaces the newest as the active spec. |
+| `engine-analysis.md` | Feasibility study for engine-driven move analysis (referenced by `Backend/Engines.md`). |
 | `Backend/README.md`, `Frontend/README.md` | Per-project design notes. |
 | `.claude/Context.sh` | SessionStart hook — prints live git/submodule state and the active planning doc. Read its output before assuming repo state. |
 

@@ -31,6 +31,6 @@ done
 echo
 
 # The newest planning doc is the active spec; surface it explicitly.
-Latest="$(ls -t additions.md todos*.md prompt.md questions.md 2>/dev/null | head -n1 || true)"
+Latest="$(ls -t planning/additions.md planning/todos*.md planning/prompt.md planning/questions.md 2>/dev/null | head -n1 || true)"
 [ -n "$Latest" ] && echo "Active planning doc (newest): $Latest"
 echo "Iteration history: summary.txt   |   Conventions: coding-conventions.md   |   Orientation: CLAUDE.md"

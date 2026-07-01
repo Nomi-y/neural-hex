@@ -1,7 +1,7 @@
 # Engine analysis — feasibility study
 
 *Authored by Claude. This document is an **analysis**, not an implementation: it was produced while
-building the match-replay viewer (`match-history.md`) to scope what adding engine-driven move
+building the match-replay viewer (`planning/match-history.md`) to scope what adding engine-driven move
 analysis to Hex would take. Nothing here is wired up yet; it is the groundwork for a future
 directive. Engine analysis is explicitly **out of scope** for the replay work — the viewer was built
 to leave room for it, and this note records where that room is.*

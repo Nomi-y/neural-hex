@@ -368,12 +368,12 @@ ENGINE_WS=ws://<backend>:3001 ENGINE_ID=<id> ENGINE_TOKEN=<token> \
   MODEL_PATH=checkpoints/best.pt python -m engine.play_engine
 ```
 
-Or use the chooser, which lists the checkpoints and launches the one you pick:
+Or use the chooser at the repo root, which lists checkpoints and launches the one you pick:
 
 ```bash
-cp engine.env.example engine.env   # then put your EngineId/Token in engine.env (gitignored)
-./run_engine.sh                     # lists checkpoints/*.pt, prompts for a number
-./run_engine.sh 1                   # or pick non-interactively
+cp engine.env.example engine.env               # put your EngineId/Token in engine.env (gitignored)
+../training-data/run_engine.sh                 # lists training-data/checkpoints/*.pt, prompts
+../training-data/run_engine.sh best            # or pick best.pt / a gen number non-interactively
 ```
 
 `engine.env` holds `ENGINE_ID` / `ENGINE_TOKEN` / `ENGINE_WS` and is gitignored — keep your token out
