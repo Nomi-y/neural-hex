@@ -12,6 +12,8 @@ all CPU cores (one process per core) when there is no accelerator — the "use a
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
+import time
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -202,6 +204,18 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
     swap = cfg.game.swap_rule
     samples: List[Sample] = []
     completed = 0  # by this worker
+    last_progress_log = time.time()
+    progress_every = float(os.environ.get("SELFPLAY_PROGRESS_INTERVAL", "30"))
+
+    def _maybe_log_progress() -> None:
+        nonlocal last_progress_log
+        now = time.time()
+        if now - last_progress_log >= progress_every:
+            from train.clock import log
+            with lock:
+                gd = game_counter.value
+            log(f"[selfplay] {gd}/{total_games} ({gd / max(1, total_games):.0%})")
+            last_progress_log = now
 
     # Active slots
     slots: list = [None] * max_conc
@@ -246,6 +260,7 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
                 completed += 1
                 with lock:
                     game_counter.value += 1
+                _maybe_log_progress()
                 for planes, pi, to_move in g.history:
                     z = 1.0 if g.winner == to_move else -1.0
                     samples.append((planes, pi, z))
