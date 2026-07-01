@@ -46,40 +46,65 @@ def _canonical_pi(state: HexState, pi_real: np.ndarray) -> np.ndarray:
 
 
 def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: bool, rng: np.random.Generator,
-               simulations: int | None = None) -> List[Sample]:
+               simulations: int | None = None, max_concurrent: int | None = None) -> List[Sample]:
+    """Play `num_games` self-play games.  If `max_concurrent` is set (and < num_games),
+    maintains that many active games at all times — when a game finishes, a new one takes
+    its slot immediately.  This keeps the inference server fed with a constant-size batch
+    of leaves, eliminating the GPU-utilisation decline as games finish.
+
+    Default (max_concurrent=None) plays all games concurrently — the original behaviour,
+    used by the single-process path and smoke tests."""
     sims = simulations if simulations is not None else cfg.mcts.simulations
     num_actions = cfg.game.num_actions
     reuse = cfg.mcts.reuse_tree
-    games = [_Game(HexState.initial(cfg.game.board_size, cfg.game.swap_rule)) for _ in range(num_games)]
+    max_conc = max_concurrent or num_games
+    max_conc = min(max_conc, num_games)
     samples: List[Sample] = []
+    board = cfg.game.board_size
+    swap = cfg.game.swap_rule
 
-    while True:
-        active = [g for g in games if not g.done]
+    # Active game slots (None = empty)
+    slots: list[object] = [None] * max_conc
+    completed = 0
+    started = 0
+    # Fill initial slots
+    for i in range(max_conc):
+        slots[i] = _Game(HexState.initial(board, swap))
+        started += 1
+
+    while completed < num_games:
+        active = [(i, g) for i, g in enumerate(slots) if g is not None and not g.done]
         if not active:
             break
-        # Reuse the subtree under the move we just played (carried on g.root); else start fresh.
-        roots = [(g.root if reuse and g.root is not None else mcts.make_root(g.state)) for g in active]
+        indices, games_list = zip(*active)
+        roots = [(g.root if reuse and g.root is not None else mcts.make_root(g.state))
+                 for g in games_list]
         mcts.run_batched(roots, evaluator, cfg, sims, add_noise, rng)
 
-        for g, root in zip(active, roots):
+        for idx, g, root in zip(indices, games_list, roots):
             pi_real = mcts.policy_distribution(root, num_actions)
             g.history.append((encode(g.state), _canonical_pi(g.state, pi_real), g.state.to_move))
-
             temperature = cfg.selfplay.temperature if g.ply < cfg.selfplay.temperature_moves else 0.0
             action = mcts.select_action(root, num_actions, temperature, rng)
-
             child = root.children.get(action) if reuse else None
             g.state = g.state.play(action)
             g.ply += 1
             if g.state.is_terminal():
                 g.done = True
                 g.winner = g.state.winner
+                completed += 1
+                # Extract samples from the finished game
+                for planes, pi, to_move in g.history:
+                    z = 1.0 if g.winner == to_move else -1.0
+                    samples.append((planes, pi, z))
+                # Replace with a new game if we haven't reached the target
+                if started < num_games:
+                    slots[idx] = _Game(HexState.initial(board, swap))
+                    started += 1
+                else:
+                    slots[idx] = None
             g.root = child if (reuse and not g.done) else None
 
-    for g in games:
-        for planes, pi, to_move in g.history:
-            z = 1.0 if g.winner == to_move else -1.0
-            samples.append((planes, pi, z))
     return samples
 
 
@@ -129,13 +154,18 @@ def _claim_worker_index(counter, lock, num_workers: int) -> int:
     return idx % num_workers
 
 
-def _init_worker_remote(cfg: Config, servers_data, counter, lock) -> None:
+def _init_worker_remote(cfg: Config, servers_data, counter, lock,
+                        stream_args=None) -> None:
     """Server mode (single or multi-GPU): the worker does CPU search and evaluates
     leaves via its assigned GPU's inference server.
 
     servers_data = [(req_q, resp_qs), ...] — one entry per GPU.  The worker claims
     a global index, picks its GPU via index % num_gpus, and then its per-GPU worker
-    slot via index // num_gpus."""
+    slot via index // num_gpus.
+
+    If stream_args=(game_counter, seed_counter, stream_lock, total_games) is
+    provided, the worker runs in streaming mode — continuously replacing finished
+    games from a shared seed pool."""
     from train.inference_server import RemoteEvaluator
     idx = _claim_worker_index(counter, lock, sum(len(sd[1]) for sd in servers_data))
     gpu = idx % len(servers_data)
@@ -143,13 +173,91 @@ def _init_worker_remote(cfg: Config, servers_data, counter, lock) -> None:
     worker_slot = (idx // len(servers_data)) % len(resp_qs)
     _WORKER["cfg"] = cfg
     _WORKER["evaluator"] = RemoteEvaluator(0, worker_slot, req_q, resp_qs[worker_slot])
+    if stream_args is not None:
+        _WORKER["stream"] = stream_args
 
 
 def _play_chunk(args) -> Tuple[int, List[Sample]]:
     num_games, seed = args
     rng = np.random.default_rng(seed)
-    samples = play_games(_WORKER["evaluator"], _WORKER["cfg"], num_games, add_noise=True, rng=rng)
+    cfg = _WORKER["cfg"]
+    samples = play_games(_WORKER["evaluator"], cfg, num_games, add_noise=True, rng=rng,
+                         max_concurrent=cfg.selfplay.parallel_games)
     return num_games, samples  # report game count so the parent can track progress in completion order
+
+
+def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
+    """Server-mode worker: maintain parallel_games concurrent games, replacing
+    finished ones from a shared seed pool, until total_games are completed across
+    all workers.  Keeps the inference server fed with a constant-size batch.
+
+    Reads shared counters from _WORKER[\"stream\"] (set by the initializer)."""
+    game_counter, seed_counter, lock, total_games = _WORKER["stream"]
+    cfg = _WORKER["cfg"]
+    evaluator = _WORKER["evaluator"]
+    max_conc = cfg.selfplay.parallel_games
+    num_actions = cfg.game.num_actions
+    reuse = cfg.mcts.reuse_tree
+    sims = cfg.mcts.simulations
+    board = cfg.game.board_size
+    swap = cfg.game.swap_rule
+    samples: List[Sample] = []
+    completed = 0  # by this worker
+
+    # Active slots
+    slots: list = [None] * max_conc
+    started = 0
+    for i in range(max_conc):
+        slots[i] = _Game(HexState.initial(board, swap))
+        started += 1
+
+    def _claim_seed() -> int | None:
+        with lock:
+            if seed_counter.value >= total_games:
+                return None
+            s = seed_counter.value
+            seed_counter.value += 1
+        return s
+
+    while True:
+        with lock:
+            global_done = game_counter.value
+        if global_done >= total_games:
+            break
+        active = [(i, g) for i, g in enumerate(slots) if g is not None and not g.done]
+        if not active:
+            break
+        indices, games_list = zip(*active)
+        roots = [(g.root if reuse and g.root is not None else mcts.make_root(g.state))
+                 for g in games_list]
+        rng = np.random.default_rng()  # don't care about determinism across workers
+        mcts.run_batched(roots, evaluator, cfg, sims, True, rng)
+
+        for idx, g, root in zip(indices, games_list, roots):
+            pi_real = mcts.policy_distribution(root, num_actions)
+            g.history.append((encode(g.state), _canonical_pi(g.state, pi_real), g.state.to_move))
+            temp = cfg.selfplay.temperature if g.ply < cfg.selfplay.temperature_moves else 0.0
+            action = mcts.select_action(root, num_actions, temp, rng)
+            child = root.children.get(action) if reuse else None
+            g.state = g.state.play(action)
+            g.ply += 1
+            if g.state.is_terminal():
+                g.done = True
+                g.winner = g.state.winner
+                completed += 1
+                with lock:
+                    game_counter.value += 1
+                for planes, pi, to_move in g.history:
+                    z = 1.0 if g.winner == to_move else -1.0
+                    samples.append((planes, pi, z))
+                new_seed = _claim_seed()
+                if new_seed is not None:
+                    slots[idx] = _Game(HexState.initial(board, swap))
+                else:
+                    slots[idx] = None
+            g.root = child if (reuse and not g.done) else None
+
+    return completed, samples
 
 
 def split_evenly(total: int, parts: int) -> List[int]:
@@ -243,7 +351,6 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         from train.inference_server import InferenceServer
         ngpus = cfg.num_gpus()
         workers_per_gpu = actors // ngpus
-        # Ensure at least 1 worker per GPU; leftover workers go to GPU 0.
         alloc = [workers_per_gpu] * ngpus
         for i in range(actors - workers_per_gpu * ngpus):
             alloc[i] += 1
@@ -255,29 +362,38 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
             srv.start()
             servers.append(srv)
 
-        # servers_data = [(req_q, resp_qs), ...] for the worker initializer
         servers_data = [(s.req_q, s.resp_qs) for s in servers]
         counter, lock = servers[0].counter, servers[0].lock
-        initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock)
 
-        # Streaming: 1-game chunks keep every worker fed with fresh games.
-        chunk_dev = cfg.device
-        sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
-        gpu_label = f"gpu-server({cfg.device})" if ngpus == 1 else f"gpu-server({ngpus}×{cfg.device})"
+        # Streaming: shared game_counter + seed_counter.  Each worker maintains
+        # parallel_games active games, atomically claiming new seeds from the
+        # pool when a game finishes.  The GPU sees a constant-size batch of
+        # leaves — no decline as games complete.
+        game_counter = ctx.Value("i", 0)
+        seed_counter = ctx.Value("i", base_seed)
+        stream_lock = ctx.Lock()
+        stream_args = (game_counter, seed_counter, stream_lock, num_games)
+        tasks = [None] * actors  # dummy — real work is driven by shared counters
+        fn = _play_worker_stream
+        initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock, stream_args)
+        gpu_label = (f"gpu-server({cfg.device})" if ngpus == 1
+                     else f"gpu-server({ngpus}×{cfg.device})")
+        log(f"[self-play] fanning {num_games} games across {actors} actors "
+            f"(eval on {gpu_label}, streaming max_concurrent={cfg.selfplay.parallel_games})")
     else:
         chunk_dev = cfg.worker_eval_device()
         sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
+        tasks = [(size, base_seed + i) for i, size in enumerate(sizes)]
+        fn = _play_chunk
         initializer, initargs = _init_worker, (cfg, np_state, chunk_dev)
         gpu_label = chunk_dev
-
-    tasks = [(size, base_seed + i) for i, size in enumerate(sizes)]
-    log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {gpu_label}), "
-        f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
-        f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
+        log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {gpu_label}), "
+            f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
+            f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
 
     try:
         with ctx.Pool(processes=actors, initializer=initializer, initargs=initargs) as pool:
-            it = pool.imap_unordered(_play_chunk, tasks)
+            it = pool.imap_unordered(fn, tasks)
             ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on)
     finally:
         for srv in servers:
