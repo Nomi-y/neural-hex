@@ -143,8 +143,11 @@ lr_decay = 0.5
 # [LR_STEP_GENS] Generations between step-decay events (step schedule only).
 lr_step_gens = 20
 # [VALUE_LOSS_WEIGHT] Weight of the value loss vs the policy loss (total = policy + w·value).
-# 1.0 standard; lower it if the value head overfits.
-value_loss_weight = 1.0
+# Policy cross-entropy over ~122 actions dwarfs value MSE (single scalar) by ~20-30× in gradient
+# magnitude.  With w=1.0 the value head gets ~5% of the shared-trunk gradient signal and degrades
+# over time (measured: vloss rose from 0.094→0.155 over 14 gens on the 5090).  w=3.0 gives the
+# value head ~15% share — enough to learn without drowning out the policy.
+value_loss_weight = 3.0
 # [ARENA_GAMES] Gating match: a new candidate net plays this many games vs the current best.
 # More games = a less noisy gate but more cost. 12 (smoke) · 40–160.
 arena_games = 64
