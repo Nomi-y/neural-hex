@@ -314,6 +314,7 @@ Knobs (all env, so they work with baked images):
 |-----|---------|---------|
 | `INFERENCE_SERVER` | on for CUDA | `0`/`1` — GPU inference server vs per-worker CPU eval. |
 | `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server fuses into one forward (bounds VRAM). |
+| `INFERENCE_AMP` | 1 | FP16 tensor-core leaf eval on CUDA (~1.6–2× the forward; net trained under AMP). `0` = FP32. |
 | `INFERENCE_COALESCE_MS` | 2 | Linger this long for more requests before firing a forward → bigger batches, GPU stays pinned. `0` = fire immediately. |
 | `PIPELINE_SHARDS` | 1 | Per-worker double-buffering of GPU eval. `1` = off (best on the 5090); `2+` fragments batches. |
 | `NUM_ACTORS` | cores − (1 + GPUs) | Self-play / arena worker processes. |

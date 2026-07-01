@@ -134,6 +134,12 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
+    # Leaf evaluation is the self-play bottleneck and needs no FP32 precision (it only guides MCTS).
+    # Run the forward under AMP on CUDA so convs/matmuls hit the tensor cores in half precision —
+    # ~1.5-2× the leaf throughput on modern GPUs (esp. Blackwell). The net was trained under AMP, so
+    # this matches its training numerics. INFERENCE_AMP=0 forces FP32.
+    amp = device == "cuda" and os.environ.get("INFERENCE_AMP", "1") != "0"
+
     nets = []
     for st in np_states:
         net = build_net(cfg).to(device)
@@ -149,7 +155,8 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
     # 0 disables (fire as soon as the queue drains — the old behaviour).
     coalesce_s = max(0.0, float(os.environ.get("INFERENCE_COALESCE_MS", "2"))) / 1000.0
     print(f"{_ts()} [infer] server ready on {device}: {len(nets)} net(s), max_batch={max_batch}, "
-          f"coalesce={coalesce_s * 1000:.0f}ms, heartbeat every {report_every:.0f}s", flush=True)
+          f"amp={'fp16' if amp else 'off'}, coalesce={coalesce_s * 1000:.0f}ms, "
+          f"heartbeat every {report_every:.0f}s", flush=True)
     n_batches = n_leaves = max_seen = 0
     last_report = time.time()
 
@@ -193,9 +200,11 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
             planes = np.concatenate([it[3] for it in items], axis=0)
             masks = np.concatenate([it[4] for it in items], axis=0)
             x = torch.from_numpy(planes).to(device, non_blocking=True)
-            logits, values = nets[net_id](x)
+            with torch.autocast("cuda", enabled=amp):
+                logits, values = nets[net_id](x)
             m = torch.from_numpy(masks).to(device, non_blocking=True)
-            probs = torch.softmax(logits.masked_fill(~m, float("-inf")), dim=1).float().cpu().numpy()
+            # Mask + softmax in FP32 (upcast first): -inf masking is exact and the distribution is clean.
+            probs = torch.softmax(logits.float().masked_fill(~m, float("-inf")), dim=1).cpu().numpy()
             values_np = values.float().cpu().numpy().reshape(-1)
             off = 0
             for net_id_, worker_idx, rid, p, _mask in items:

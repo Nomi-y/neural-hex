@@ -8,6 +8,7 @@ indices.  Softmax stays on GPU; only the final policy array moves to CPU.  Batch
 
 from __future__ import annotations
 
+import os
 from typing import List, Tuple
 
 import numpy as np
@@ -22,12 +23,17 @@ class Evaluator:
         self.net = net
         self.device = device
         self.net.eval()  # evaluator nets are inference-only; avoid toggling per call
+        # AMP on CUDA: the forward hits the tensor cores in half precision (~1.5-2× faster, esp. on
+        # Blackwell); the net trained under AMP so numerics match. Keeps this evaluator identical to
+        # the GPU inference server. INFERENCE_AMP=0 forces FP32. No effect on CPU/MPS.
+        self.amp = device == "cuda" and os.environ.get("INFERENCE_AMP", "1") != "0"
 
     @torch.no_grad()
     def evaluate(self, states: List[HexState]) -> Tuple[np.ndarray, np.ndarray]:
         planes = encode_batch(states)
         x = torch.from_numpy(planes).to(self.device, non_blocking=True)
-        logits, values = self.net(x)
+        with torch.autocast("cuda", enabled=self.amp):
+            logits, values = self.net(x)
 
         num_actions = logits.shape[1]
         size = states[0].size
@@ -36,8 +42,9 @@ class Evaluator:
         mask_np = np.stack([canonical_legal_mask(s) for s in states])
         mask = torch.from_numpy(mask_np).to(self.device, non_blocking=True)
 
-        masked = logits.masked_fill(~mask, float('-inf'))
-        probs = torch.softmax(masked, dim=1).float().cpu().numpy()
+        # Mask + softmax in FP32 (upcast logits first) so -inf masking is exact under AMP.
+        masked = logits.float().masked_fill(~mask, float('-inf'))
+        probs = torch.softmax(masked, dim=1).cpu().numpy()
         values_np = values.float().cpu().numpy().reshape(-1)
 
         # Map canonical probs → real-action order: a transpose for BLUE, identity for RED.
