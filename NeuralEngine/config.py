@@ -180,7 +180,7 @@ class MctsConfig:
     use_virtual_connection: bool = _env_bool("USE_VC", True, "mcts.use_virtual_connection")
     fpu_reduction: float = _env_float("FPU", 0.0, "mcts.fpu_reduction")  # 0 disables FPU (legacy q=0)
     reuse_tree: bool = _env_bool("REUSE_TREE", False, "mcts.reuse_tree")  # carry MCTS subtree across self-play moves
-    pipeline_shards: int = _env_int("PIPELINE_SHARDS", 2, "mcts.pipeline_shards")  # GPU inference pipelining depth
+    pipeline_shards: int = _env_int("PIPELINE_SHARDS", 1, "mcts.pipeline_shards")  # GPU inference pipelining depth
 
 
 @dataclass
@@ -271,13 +271,14 @@ class Config:
 
         Uses available_cpus() (cgroup/affinity-aware), NOT mp.cpu_count(): on a 16-vCPU container the
         host's 64 logical cores would otherwise spawn 63 workers and thrash. Reserve one core for the
-        main loop, plus one for the GPU inference server when it's on (a CPU-starved server can't keep
-        the GPU fed). MPS (Apple) stays single-actor. Override with NUM_ACTORS."""
+        main loop, plus one per GPU inference server when it's on (a CPU-starved server can't keep its
+        GPU fed) — so on a multi-GPU box, where CPUs scale with GPUs, the reserve scales too. MPS
+        (Apple) stays single-actor. Override with NUM_ACTORS."""
         if self.train.num_actors > 0:
             return self.train.num_actors
         if self.device == "mps":
             return 1
-        reserve = 2 if self.use_inference_server() else 1
+        reserve = (1 + self.num_gpus()) if self.use_inference_server() else 1
         return max(1, available_cpus() - reserve)
 
     def worker_eval_device(self) -> str:

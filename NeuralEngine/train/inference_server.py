@@ -142,8 +142,14 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         nets.append(net)
 
     report_every = float(os.environ.get("INFERENCE_LOG_EVERY", "30"))
+    # Coalescing window (ms): after draining the queued burst, linger this long for the steady
+    # trickle of new requests so the GPU runs large batches instead of many tiny ones. Self-play is
+    # throughput-bound, not latency-bound, so trading <coalesce_ms of latency for a much fuller batch
+    # is a clear win — the workers whose leaves join the batch would have waited on the GPU anyway.
+    # 0 disables (fire as soon as the queue drains — the old behaviour).
+    coalesce_s = max(0.0, float(os.environ.get("INFERENCE_COALESCE_MS", "2"))) / 1000.0
     print(f"{_ts()} [infer] server ready on {device}: {len(nets)} net(s), max_batch={max_batch}, "
-          f"heartbeat every {report_every:.0f}s", flush=True)
+          f"coalesce={coalesce_s * 1000:.0f}ms, heartbeat every {report_every:.0f}s", flush=True)
     n_batches = n_leaves = max_seen = 0
     last_report = time.time()
 
@@ -155,16 +161,23 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         if first == _STOP:
             break
 
-        # Greedily drain whatever is already queued so a single forward serves many workers,
-        # capped at max_batch leaves to bound server-side memory.
+        # Coalesce requests into one forward, capped at max_batch to bound server memory: drain the
+        # burst already queued, then (if a window is set) briefly wait for more arrivals. A quiet gap
+        # of coalesce_s — or the cap — ends the batch, so the server adapts to load: it fills big
+        # batches under pressure and still fires promptly when the trickle stops.
         batch = [first]
         total = first[3].shape[0]
         stop = False
         while total < max_batch:
             try:
-                item = req_q.get_nowait()
+                item = req_q.get_nowait()  # fast path: take whatever is already waiting
             except queue.Empty:
-                break
+                if coalesce_s <= 0:
+                    break
+                try:
+                    item = req_q.get(timeout=coalesce_s)  # linger for the next arrival
+                except queue.Empty:
+                    break  # quiet gap → fire what we have
             if item == _STOP:
                 stop = True
                 break

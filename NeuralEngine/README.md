@@ -43,13 +43,19 @@ When a game finishes, a new seed is atomically claimed from a shared pool — th
 stays fed with a constant-size batch of leaves for the entire generation.  No
 decline as games complete.
 
-**Pipelining** (`pipeline_shards`, default 2): each worker splits its concurrent games
-into that many groups and double-buffers their GPU evaluations — while one group's leaf
-batch is on the GPU, the next group's tree walk runs on the CPU.  This overlaps CPU search
-with GPU inference (`RemoteEvaluator.submit`/`receive` let a worker hold several batches in
-flight) so the inference server's queue stays full and the GPU stays pinned instead of
-ping-ponging with each worker's blocking round-trip.  It's numerically identical to the
-serial search — regrouping only changes which leaves share a batch.  `1` = off.
+**Coalescing** (`INFERENCE_COALESCE_MS`, default 2 ms): the GPU server drains the queued
+burst of requests, then lingers this long for the steady trickle of new ones before firing —
+so it runs a few large forwards instead of many tiny ones.  A quiet gap (or `max_batch`) ends
+the batch, so it adapts to load.  Self-play is throughput-bound, not latency-bound, so trading
+a millisecond of latency for a much fuller batch is the highest-leverage way to keep the GPU
+pinned.  This is the main dial for leaves/s.
+
+**Pipelining** (`pipeline_shards`, default 1 = off): optionally splits each worker's games
+into groups and double-buffers their GPU evals (`RemoteEvaluator.submit`/`receive` let a worker
+hold several batches in flight), overlapping CPU search with GPU inference.  It's numerically
+identical to serial search.  In practice, with many worker processes the workers already overlap
+across each other, so sharding mainly fragments the per-request batch — it measured *lower*
+leaves/s on the 5090, hence off by default.  Coalescing is the better lever.
 
 **Leaves vs. samples**: a *leaf* is one network evaluation during search
 (plane encoding → forward pass → policy + value).  The `[infer]` heartbeat logs
@@ -289,9 +295,10 @@ Knobs (all env, so they work with baked images):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `INFERENCE_SERVER` | on for CUDA | `0`/`1` — GPU inference server vs per-worker CPU eval. |
-| `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server coalesces into one forward (bounds VRAM). |
-| `PIPELINE_SHARDS` | 2 | Per-worker double-buffering of GPU eval (overlap CPU search + GPU inference). `1` = serial. |
-| `NUM_ACTORS` | cores − 2 | Self-play / arena worker processes. |
+| `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server fuses into one forward (bounds VRAM). |
+| `INFERENCE_COALESCE_MS` | 2 | Linger this long for more requests before firing a forward → bigger batches, GPU stays pinned. `0` = fire immediately. |
+| `PIPELINE_SHARDS` | 1 | Per-worker double-buffering of GPU eval. `1` = off (best on the 5090); `2+` fragments batches. |
+| `NUM_ACTORS` | cores − (1 + GPUs) | Self-play / arena worker processes. |
 | `NUM_GPUS` | auto | Number of GPUs to use (auto = `torch.cuda.device_count()`). |
 
 ## Key configuration (hyperparams.toml)

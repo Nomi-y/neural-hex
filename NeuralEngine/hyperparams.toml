@@ -72,11 +72,11 @@ fpu_reduction = 0.0
 reuse_tree = false
 # [PIPELINE_SHARDS] Self-play (CUDA inference-server path) only: split each worker's concurrent games
 # into this many groups and double-buffer their GPU evaluations — while one group's leaf batch is on
-# the GPU, the next group's tree walk runs on the CPU. Overlaps CPU search with GPU inference so the
-# server queue stays full and the GPU stays pinned (no blocking round-trip bubble). 1 = off (serial,
-# the old behaviour); 2 is a good default; 3–4 hides more latency at the cost of smaller per-request
-# batches. No effect on the CPU fan-out path, arena, or the deployed engine.
-pipeline_shards = 2
+# the GPU, the next group's tree walk runs on the CPU. 1 = off (serial). NOTE: with many worker
+# processes the workers already overlap CPU/GPU across each other, so sharding just fragments the
+# per-request batch and measured *lower* leaves/s on the RTX 5090 (16 vCPU) box — hence default 1.
+# Server-side coalescing (INFERENCE_COALESCE_MS, env) is the better lever for keeping the GPU fed.
+pipeline_shards = 1
 
 [selfplay]
 # [PARALLEL_GAMES] Games batched per network forward pass (per worker) — bigger = better GPU

@@ -83,8 +83,9 @@ class _CpuReader:
 
 
 def _sample_gpu() -> dict | None:
-    """Query the first GPU via nvidia-smi. Returns {gpu_pct, vram_used_mib, vram_total_mib}
-    or None when no GPU / smi is available."""
+    """Query ALL GPUs via nvidia-smi (one row each) and aggregate across the box: mean utilisation,
+    summed VRAM, and the GPU count — so a multi-GPU run's [hw] line reflects every card, not just
+    cuda:0. Returns {gpu_pct, vram_used_mib, vram_total_mib, n_gpus} or None when no GPU / smi."""
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
@@ -93,13 +94,22 @@ def _sample_gpu() -> dict | None:
         )
         if out.returncode != 0 or not out.stdout.strip():
             return None
-        parts = [p.strip() for p in out.stdout.split(",")]
-        if len(parts) < 3:
+        utils: list[float] = []
+        used = total = 0
+        for line in out.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            utils.append(float(parts[0]) / 100.0)
+            used += int(parts[1])
+            total += int(parts[2])
+        if not utils:
             return None
         return {
-            "gpu_pct": float(parts[0]) / 100.0,
-            "vram_used_mib": int(parts[1]),
-            "vram_total_mib": int(parts[2]),
+            "gpu_pct": sum(utils) / len(utils),
+            "vram_used_mib": used,
+            "vram_total_mib": total,
+            "n_gpus": len(utils),
         }
     except Exception:
         return None
@@ -170,7 +180,8 @@ def _format(averages: dict) -> str:
     if "ram_used_pct" in averages:
         parts.append(f"ram={averages['ram_used_pct']:.0%}({averages.get('ram_total_gb', 0):.0f}G)")
     if "gpu_pct" in averages:
-        gpu = f"gpu={averages['gpu_pct']:.0%}"
+        n = int(averages.get("n_gpus", 1) or 1)
+        gpu = f"gpu={averages['gpu_pct']:.0%}" + (f"×{n}" if n > 1 else "")
         if "vram_used_mib" in averages:
             gpu += f" vram={averages['vram_used_mib']:.0f}/{averages['vram_total_mib']:.0f}MiB"
         parts.append(gpu)
@@ -276,6 +287,7 @@ class HardwareMonitor:
                 averages["gpu_pct"] = sum(g["gpu_pct"] for g in gpu_points) / len(gpu_points)
                 averages["vram_used_mib"] = sum(g["vram_used_mib"] for g in gpu_points) / len(gpu_points)
                 averages["vram_total_mib"] = gpu_points[0]["vram_total_mib"]
+                averages["n_gpus"] = gpu_points[-1].get("n_gpus", 1)
 
             try:
                 log(f"[hw] {_format(averages)}")
