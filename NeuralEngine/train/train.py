@@ -298,6 +298,11 @@ def _validate_checkpoint_config(ckpt_config: dict | None, cfg: Config) -> bool:
 
 def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.random.Generator,
                  device: str, generation: int):
+    # MULTI-GPU: this gradient descent runs on a SINGLE device (`device`, = cuda:0). Self-play and
+    # arena already fan out across every GPU, but training does not — so on a multi-GPU box the other
+    # cards idle during this phase. To scale training too, wrap `net` in DistributedDataParallel (one
+    # process per GPU, gradient all-reduce) or overlap next-gen self-play with this. See the
+    # "MULTI-GPU LIMITATION" note in README.md. Single-GPU runs are unaffected.
     net.train()
     policy_losses, value_losses, total_losses = [], [], []
     steps = cfg.train.train_steps_per_generation

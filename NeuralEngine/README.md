@@ -80,6 +80,16 @@ on the cuda-5090 preset) learns from the last 500K positions:
 Timer-based progress logging (`TRAIN_LOG_INTERVAL`, default 120 s) so you always
 see progress regardless of step count.
 
+> ⚠️ **MULTI-GPU LIMITATION — read before scaling past one GPU.** Self-play and arena
+> scale 1:1 across all GPUs (one inference server per GPU, workers round-robined), but
+> **this gradient-descent step runs on `cuda:0` only** — there is no DistributedDataParallel.
+> On an N-GPU box, GPUs 1…N-1 sit **idle** for the whole training phase (~3 min of a ~34 min
+> generation, so ~7–9 % of wall-clock at ~$/GPU-hr each). A single-GPU run is unaffected.
+> To close it when scaling up: wrap the net in DDP (one training process per GPU, all-reduce
+> gradients) **or** overlap the next generation's self-play with this generation's training.
+> The single-GPU code path in `train.py` (`_train_steps`, marked with `MULTI-GPU:`) is where
+> this changes. Until then, a bigger `GAMES_PER_GEN` shrinks the idle fraction.
+
 ### 3. Arena — candidate vs. incumbent gating
 
 The freshly trained candidate plays 48 games (128 sims/move) against the current
