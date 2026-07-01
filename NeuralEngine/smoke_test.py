@@ -111,6 +111,7 @@ def main() -> None:
     print(f"  watchdog path returned {wr3:.0%} without hanging")
 
     _test_drain_watchdog()
+    _test_resignation()
 
     print(f"  solver on a near-terminal position returned value={val} action={action}")
 
@@ -222,6 +223,43 @@ def cuda_checks() -> None:
 # segment present once inside a generation and omitted for startup/shutdown lines.
 _LOG_LINE = __import__("re").compile(
     r"^\[\d{2}:\d{2}:\d{2} \+\d+:\d{2}:\d{2}\]( \[gen \d+\])? \[[\w-]+\] ")
+
+
+def _test_resignation() -> None:
+    """Opt-in resignation via the shared _advance_game helper: a side whose post-search root value is
+    below threshold resigns (opponent wins); a no-resign playthrough plays on but records the would-be
+    resignation for false-positive measurement; and with resignation off the step is unchanged."""
+    from hex.board import HexState, RED, BLUE
+    from train.selfplay import _Game, _advance_game
+    from search import mcts
+
+    cfg = load()
+    rng = np.random.default_rng(0)
+    N = cfg.game.board_size
+    min_ply = cfg.selfplay.resign_min_ply
+
+    def losing_root(state):
+        r = mcts.make_root(state)
+        r.sum_n, r.sum_w = 30, -29.4  # root value ≈ -0.98, well below the default -0.92 threshold
+        return r
+
+    # Resign on: side to move (RED on the empty board) is lost → resigns, opponent (BLUE) wins.
+    g = _Game(HexState.initial(N, True)); g.ply = min_ply + 1
+    assert _advance_game(g, losing_root(g.state), cfg, rng, resign=True)
+    assert g.done and g.resigned and g.winner == BLUE, "loser should resign and the opponent win"
+    assert g.history, "the searched position is still recorded as a training sample"
+
+    # Playthrough (no_resign): does NOT resign, but flags the would-be resignation and plays a real move.
+    g2 = _Game(HexState.initial(N, True), no_resign=True); g2.ply = min_ply + 1
+    _advance_game(g2, losing_root(g2.state), cfg, rng, resign=True)
+    assert not g2.resigned and g2.would_resign == RED, "playthrough records would-resign, doesn't resign"
+    assert g2.ply == min_ply + 2, "playthrough plays a real move instead of resigning"
+
+    # Resign off: unchanged (no resignation, no flag) even with a losing value.
+    g3 = _Game(HexState.initial(N, True)); g3.ply = min_ply + 1
+    _advance_game(g3, losing_root(g3.state), cfg, rng, resign=False)
+    assert not g3.resigned and g3.would_resign == 0, "resign off ⇒ plain record-then-play"
+    print("  ✓ resignation: loser resigns, playthrough measures false positives, off = unchanged")
 
 
 def cuda_training_loops(generations: int = 2) -> None:

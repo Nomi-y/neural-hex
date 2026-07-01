@@ -89,11 +89,21 @@ temperature_moves = 20
 # [TEMPERATURE] Sampling temperature during those opening plies (move ∝ visit_count^(1/T)).
 # 1.0 = proportional to visits; lower = sharper/stronger but less diverse. 1.0 is standard.
 temperature = 1.0
-# [RESIGN_THRESHOLD] RESERVED — NOT currently used: self-play plays every game to the end (no
-# resignation). Intended as the value below which a clearly-lost game could be resigned to save compute.
+# [RESIGN_ENABLED] Resignation: end a game early once the side to move is almost surely lost, instead
+# of playing out a decided position — fewer forwards, so faster self-play (the AlphaZero accelerator).
+# OFF by default: it only pays off once the value head is trustworthy (a random early net can't judge
+# lost positions), and a wrong resignation mislabels that game's training data. Turn on for later runs;
+# watch the [selfplay] resign line's false-positive rate and raise RESIGN_THRESHOLD if it climbs.
+resign_enabled = false
+# [RESIGN_THRESHOLD] Resign when the post-search root value (side-to-move perspective, +1 win … -1 loss)
+# falls below this. Conservative (near -1) = rare, safe resignations; toward 0 = more (faster) but more
+# false positives. -0.9 to -0.95 is typical.
 resign_threshold = -0.95
-# [RESIGN_MIN_PLY] RESERVED — see above. Intended minimum ply before resignation is permitted.
+# [RESIGN_MIN_PLY] Never resign before this ply (early value estimates are noisy). ~12–20.
 resign_min_ply = 18
+# [RESIGN_PLAYTHROUGH] Fraction of games that ignore resignation and play to the end, so their true
+# outcome measures the resignation false-positive rate (reported on the [selfplay] resign line). ~0.1.
+resign_playthrough = 0.1
 
 [train]
 # [TRAIN_HOURS] Wall-clock training budget; the loop keeps running generations until this elapses.

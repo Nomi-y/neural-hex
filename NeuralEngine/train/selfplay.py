@@ -30,21 +30,66 @@ Sample = Tuple[np.ndarray, np.ndarray, float]
 
 
 class _Game:
-    __slots__ = ("state", "history", "ply", "done", "winner", "root")
+    __slots__ = ("state", "history", "ply", "done", "winner", "root", "no_resign", "resigned", "would_resign")
 
-    def __init__(self, state: HexState) -> None:
+    def __init__(self, state: HexState, no_resign: bool = False) -> None:
         self.state = state
         self.history: List[Tuple[np.ndarray, np.ndarray, int]] = []  # (canonical planes, canonical pi, to_move)
         self.ply = 0
         self.done = False
         self.winner = 0
-        self.root = None   # carried MCTS subtree for the next move when cfg.mcts.reuse_tree
+        self.root = None        # carried MCTS subtree for the next move when cfg.mcts.reuse_tree
+        self.no_resign = no_resign  # playthrough game: never resign (used to measure false positives)
+        self.resigned = False       # ended by resignation rather than a real terminal
+        self.would_resign = 0       # side that first crossed the resign threshold (0 = none yet)
 
 
 def _canonical_pi(state: HexState, pi_real: np.ndarray) -> np.ndarray:
     if state.to_move == RED:
         return pi_real
     return pi_real[action_transpose(state.size)]
+
+
+def _new_game(cfg: Config, board: int, swap: bool, rng: np.random.Generator) -> _Game:
+    """Fresh game; when resignation is on, a `resign_playthrough` fraction are flagged no-resign so
+    they play to the end and let us measure the resignation false-positive rate."""
+    no_resign = cfg.selfplay.resign_enabled and rng.random() < cfg.selfplay.resign_playthrough
+    return _Game(HexState.initial(board, swap), no_resign=no_resign)
+
+
+def _advance_game(g: _Game, root, cfg: Config, rng: np.random.Generator, resign: bool) -> bool:
+    """Record the searched position for `g`, then resign or play one selected move; set g.done/winner.
+    Returns True when the game finishes.  Shared by both self-play loops so the move/resign logic lives
+    in one place.  With `resign` off this is exactly the plain record-then-play step.
+
+    Resignation: once past `resign_min_ply`, if the post-search root value (side-to-move perspective)
+    is below `resign_threshold`, that side is almost surely lost and gives up.  A `no_resign`
+    playthrough game never resigns but records the side that WOULD have (g.would_resign), so the
+    caller can check afterwards whether it actually went on to win (a false positive)."""
+    num_actions = cfg.game.num_actions
+    pi_real = mcts.policy_distribution(root, num_actions)
+    g.history.append((encode(g.state), _canonical_pi(g.state, pi_real), g.state.to_move))
+
+    if resign and g.ply >= cfg.selfplay.resign_min_ply and mcts.root_value(root) < cfg.selfplay.resign_threshold:
+        if g.would_resign == 0:
+            g.would_resign = g.state.to_move
+        if not g.no_resign:
+            g.done = True
+            g.winner = 3 - g.state.to_move  # side to move resigns → opponent wins (RED=1, BLUE=2)
+            g.resigned = True
+            g.root = None
+            return True
+
+    temperature = cfg.selfplay.temperature if g.ply < cfg.selfplay.temperature_moves else 0.0
+    action = mcts.select_action(root, num_actions, temperature, rng)
+    child = root.children.get(action) if cfg.mcts.reuse_tree else None
+    g.state = g.state.play(action)
+    g.ply += 1
+    if g.state.is_terminal():
+        g.done = True
+        g.winner = g.state.winner
+    g.root = child if (cfg.mcts.reuse_tree and not g.done) else None
+    return g.done
 
 
 def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: bool, rng: np.random.Generator,
@@ -65,13 +110,14 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
     board = cfg.game.board_size
     swap = cfg.game.swap_rule
 
+    resign = cfg.selfplay.resign_enabled
     # Active game slots (None = empty)
     slots: list[object] = [None] * max_conc
     completed = 0
     started = 0
     # Fill initial slots
     for i in range(max_conc):
-        slots[i] = _Game(HexState.initial(board, swap))
+        slots[i] = _new_game(cfg, board, swap, rng)
         started += 1
 
     while completed < num_games:
@@ -84,16 +130,7 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
         mcts.run_batched(roots, evaluator, cfg, sims, add_noise, rng)
 
         for idx, g, root in zip(indices, games_list, roots):
-            pi_real = mcts.policy_distribution(root, num_actions)
-            g.history.append((encode(g.state), _canonical_pi(g.state, pi_real), g.state.to_move))
-            temperature = cfg.selfplay.temperature if g.ply < cfg.selfplay.temperature_moves else 0.0
-            action = mcts.select_action(root, num_actions, temperature, rng)
-            child = root.children.get(action) if reuse else None
-            g.state = g.state.play(action)
-            g.ply += 1
-            if g.state.is_terminal():
-                g.done = True
-                g.winner = g.state.winner
+            if _advance_game(g, root, cfg, rng, resign):
                 completed += 1
                 # Extract samples from the finished game
                 for planes, pi, to_move in g.history:
@@ -101,11 +138,10 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
                     samples.append((planes, pi, z))
                 # Replace with a new game if we haven't reached the target
                 if started < num_games:
-                    slots[idx] = _Game(HexState.initial(board, swap))
+                    slots[idx] = _new_game(cfg, board, swap, rng)
                     started += 1
                 else:
                     slots[idx] = None
-            g.root = child if (reuse and not g.done) else None
 
     return samples
 
@@ -194,15 +230,18 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
     all workers.  Keeps the inference server fed with a constant-size batch.
 
     Reads shared counters from _WORKER[\"stream\"] (set by the initializer)."""
-    game_counter, seed_counter, lock, total_games, max_conc, progress_log = _WORKER["stream"]
+    game_counter, seed_counter, lock, total_games, max_conc, progress_log, resign_stats = _WORKER["stream"]
+    resign_ct, pt_ct, fp_ct = resign_stats  # resigned games, playthrough triggers, false positives
     cfg = _WORKER["cfg"]
     evaluator = _WORKER["evaluator"]
     num_actions = cfg.game.num_actions
     reuse = cfg.mcts.reuse_tree
     sims = cfg.mcts.simulations
     shards = max(1, cfg.mcts.pipeline_shards)
+    resign = cfg.selfplay.resign_enabled
     board = cfg.game.board_size
     swap = cfg.game.swap_rule
+    rng = np.random.default_rng()  # per-worker; determinism across workers doesn't matter
     samples: List[Sample] = []
     completed = 0  # by this worker
     progress_every = float(os.environ.get("SELFPLAY_PROGRESS_INTERVAL", "30"))
@@ -225,7 +264,7 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
     slots: list = [None] * max_conc
     started = 0
     for i in range(max_conc):
-        slots[i] = _Game(HexState.initial(board, swap))
+        slots[i] = _new_game(cfg, board, swap, rng)
         started += 1
 
     def _claim_seed() -> int | None:
@@ -247,33 +286,25 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
         indices, games_list = zip(*active)
         roots = [(g.root if reuse and g.root is not None else mcts.make_root(g.state))
                  for g in games_list]
-        rng = np.random.default_rng()  # don't care about determinism across workers
         mcts.run_batched_streaming(roots, evaluator, cfg, sims, True, rng, shards)
 
         for idx, g, root in zip(indices, games_list, roots):
-            pi_real = mcts.policy_distribution(root, num_actions)
-            g.history.append((encode(g.state), _canonical_pi(g.state, pi_real), g.state.to_move))
-            temp = cfg.selfplay.temperature if g.ply < cfg.selfplay.temperature_moves else 0.0
-            action = mcts.select_action(root, num_actions, temp, rng)
-            child = root.children.get(action) if reuse else None
-            g.state = g.state.play(action)
-            g.ply += 1
-            if g.state.is_terminal():
-                g.done = True
-                g.winner = g.state.winner
-                completed += 1
-                with lock:
-                    game_counter.value += 1
-                _maybe_log_progress()
-                for planes, pi, to_move in g.history:
-                    z = 1.0 if g.winner == to_move else -1.0
-                    samples.append((planes, pi, z))
-                new_seed = _claim_seed()
-                if new_seed is not None:
-                    slots[idx] = _Game(HexState.initial(board, swap))
-                else:
-                    slots[idx] = None
-            g.root = child if (reuse and not g.done) else None
+            if not _advance_game(g, root, cfg, rng, resign):
+                continue
+            completed += 1
+            with lock:
+                game_counter.value += 1
+                if g.resigned:
+                    resign_ct.value += 1
+                if g.no_resign and g.would_resign:               # a playthrough that hit the threshold
+                    pt_ct.value += 1
+                    if g.winner == g.would_resign:               # …and the would-resign side still won
+                        fp_ct.value += 1
+            _maybe_log_progress()
+            for planes, pi, to_move in g.history:
+                z = 1.0 if g.winner == to_move else -1.0
+                samples.append((planes, pi, z))
+            slots[idx] = _new_game(cfg, board, swap, rng) if _claim_seed() is not None else None
 
     return completed, samples
 
@@ -391,6 +422,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
     # line there. Keep the parent progress for the chunked path, where it IS the incremental signal.
     emit_progress = None if use_server else progress
     read_progress: Optional[Callable[[], int]] = None  # streaming sets this → stall-based watchdog
+    resign_stats = None  # streaming sets this → (resigned, playthrough-triggers, false-positives)
 
     def _on(item) -> None:
         nonlocal done
@@ -426,9 +458,10 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         game_counter = ctx.Value("i", 0)
         seed_counter = ctx.Value("i", 0)  # game counter, not RNG seed
         progress_log = ctx.Value("d", 0.0)  # shared last-progress-log time → one line/interval, not per worker
+        resign_stats = (ctx.Value("i", 0), ctx.Value("i", 0), ctx.Value("i", 0))
         stream_lock = ctx.Lock()
         max_conc = max(1, cfg.selfplay.parallel_games // max(1, actors))
-        stream_args = (game_counter, seed_counter, stream_lock, num_games, max_conc, progress_log)
+        stream_args = (game_counter, seed_counter, stream_lock, num_games, max_conc, progress_log, resign_stats)
         read_progress = lambda: game_counter.value  # completed-game count → watchdog measures progress
         tasks = [None] * actors  # dummy — real work is driven by shared counters
         fn = _play_worker_stream
@@ -462,4 +495,9 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         log(f"[selfplay] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s"
             f"{stalled} — terminated pool, continuing with {done}/{num_games} games "
             f"({sum(len(r) for r in results)} samples).")
+    if resign_stats is not None and cfg.selfplay.resign_enabled:
+        n_resign, n_pt, n_fp = (v.value for v in resign_stats)
+        fp_rate = n_fp / n_pt if n_pt else 0.0
+        log(f"[selfplay] resign: {n_resign}/{num_games} games ended early ({n_resign / max(1, num_games):.0%}); "
+            f"false-positive {n_fp}/{n_pt} playthroughs ({fp_rate:.0%}) — raise RESIGN_THRESHOLD if high")
     return [s for r in results for s in r]

@@ -287,6 +287,12 @@ def policy_distribution(node: Node, num_actions: int) -> np.ndarray:
     return counts / total if total > 0 else counts
 
 
+def root_value(node: Node) -> float:
+    """Mean backed-up value at the root, from the side-to-move's perspective (+1 ≈ winning, -1 ≈
+    losing). Used for resignation: a value near -1 means the side to move is almost surely lost."""
+    return node.sum_w / node.sum_n if node.sum_n > 0 else 0.0
+
+
 def select_action(node: Node, num_actions: int, temperature: float, rng: np.random.Generator) -> int:
     """Pick a move from the visit counts. temperature==0 => most-visited; else sample N^(1/temp)."""
     if node.solved_value is not None and node.solved_action is not None:

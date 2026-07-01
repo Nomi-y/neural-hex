@@ -188,8 +188,10 @@ class SelfPlayConfig:
     parallel_games: int = _env_int("PARALLEL_GAMES", 64, "selfplay.parallel_games")
     temperature_moves: int = _env_int("TEMPERATURE_MOVES", 20, "selfplay.temperature_moves")
     temperature: float = _env_float("TEMPERATURE", 1.0, "selfplay.temperature")
+    resign_enabled: bool = _env_bool("RESIGN_ENABLED", False, "selfplay.resign_enabled")
     resign_threshold: float = _env_float("RESIGN_THRESHOLD", -0.92, "selfplay.resign_threshold")
     resign_min_ply: int = _env_int("RESIGN_MIN_PLY", 12, "selfplay.resign_min_ply")
+    resign_playthrough: float = _env_float("RESIGN_PLAYTHROUGH", 0.1, "selfplay.resign_playthrough")
 
 
 @dataclass

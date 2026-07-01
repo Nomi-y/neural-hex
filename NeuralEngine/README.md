@@ -60,6 +60,15 @@ give ~1.8× on Turing and more on Blackwell, on by default (`INFERENCE_AMP=0` to
 `submit`/`receive` (async) and the coalescing knob remain for a future virtual-loss worker that could
 keep many leaves genuinely in flight per game.
 
+**Resignation** (`resign_enabled`, default off): once past `resign_min_ply`, if a game's post-search
+root value drops below `resign_threshold` the side to move is almost surely lost, so the game ends
+early instead of playing out a decided position — fewer forwards, faster self-play (the classic
+AlphaZero accelerator).  A `resign_playthrough` fraction of games ignore resignation and play to the
+end; their true outcome measures the false-positive rate, logged on the `[selfplay] resign` line.
+Off by default because it needs a trustworthy value head (a random early net can't judge lost
+positions) and a wrong resignation mislabels that game's data — turn it on for later runs and watch
+the FP rate.
+
 **Leaves vs. samples**: a *leaf* is one network evaluation during search
 (plane encoding → forward pass → policy + value).  The `[infer]` heartbeat logs
 leaves/second.  A *sample* is a completed training datum: `(board position,
