@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# Extract the per-generation "DONE" lines from a training run and render a summary document for easy
-# analysis (a parsed table of ploss/vloss/arena over generations, plus quick stats and the raw lines).
+# Training-run summary — parse the structured log into a report.
 #
 # Usage:
-#   ./training_summary.sh                       # podman logs hextrain  -> training_summary.md
-#   ./training_summary.sh -c mycontainer        # a different container
-#   ./training_summary.sh -f train.log          # read a log file instead (nohup/tee users)
-#   ./training_summary.sh -o report.md          # choose the output file
-#   ./training_summary.sh -w                    # watch: regenerate every REFRESH seconds
+#   ./training_summary.sh train_20260630_231305.log          # a log file
+#   ./training_summary.sh -c hextrain                        # podman logs
+#   ./training_summary.sh train.log -o report.md             # custom output
+#   ./training_summary.sh train.log -w                       # watch: refresh every REFRESH s
 #
-# The DONE line written by train.py looks like:
-#   [23:52:01 +0:45:53] [gen 4] DONE samples=34385 buffer=120000 ploss=4.866 vloss=0.197 \
-#       arena=50% kept gen_time=2754s elapsed=0:45:53 remaining=23:14:06 (~30 more gens)
+# Reads [gen N] DONE … lines (generation table), [hw] … lines (hardware
+# utilisation timeline), and [infer] … lines (inference-server throughput).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -28,7 +25,8 @@ while [ $# -gt 0 ]; do
     -o|--out)       OUT="$2";       shift 2 ;;
     -w|--watch)     WATCH=1;        shift ;;
     -h|--help)      grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;;
-    *) echo "Unknown arg: $1 (try -h)" >&2; exit 2 ;;
+    -*) echo "Unknown flag: $1 (try -h)" >&2; exit 2 ;;
+    *)  SRC_FILE="$1"; shift ;;   # positional arg = log file
   esac
 done
 
@@ -40,7 +38,7 @@ read_logs() {
   fi
 }
 
-# TSV: gen \t ploss \t vloss \t arena \t result \t gen_time \t elapsed
+# ── DONE lines → TSV: gen \t ploss \t vloss \t arena \t result \t gen_time \t elapsed \t samples
 parse_done() {
   awk '
     /\] DONE / {
@@ -52,17 +50,56 @@ parse_done() {
           n = index($i, "="); val[substr($i,1,n-1)] = substr($i,n+1)
         }
       }
-      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-        gen, val["ploss"], val["vloss"], val["arena"], res, val["gen_time"], val["elapsed"]
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+        gen, val["ploss"], val["vloss"], val["arena"], res,
+        val["gen_time"], val["elapsed"], val["samples"]
+    }'
+}
+
+# ── [hw] lines → TSV: cpu_pct \t ram_pct \t ram_gb \t gpu_pct \t vram_used \t vram_total
+parse_hw() {
+  awk '
+    /\[hw\]/ {
+      cpu=""; ram_pct=""; ram_gb=""; gpu=""; vram_used=""; vram_total=""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^cpu=/)  { cpu  = substr($i, 5) }
+        if ($i ~ /^ram=/)  { v = substr($i, 5); gsub(/%/, "", v); ram_pct = v }
+        if ($i ~ /^ram=.*\(/) {
+          v = $i; gsub(/.*\(/, "", v); gsub(/G\).*/, "", v); ram_gb = v
+        }
+        if ($i ~ /^gpu=/)  { v = substr($i, 5); gsub(/%/, "", v); gpu = v }
+        if ($i ~ /^vram=/) { split(substr($i,6), a, "/"); vram_used = a[1]; gsub(/MiB.*/, "", a[2]); vram_total = a[2] }
+      }
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n", cpu, ram_pct, ram_gb, gpu, vram_used, vram_total
+    }'
+}
+
+# ── [infer] lines → TSV: leaves_per_s \t avg_batch \t peak_batch
+parse_infer() {
+  awk '
+    /\[infer\]/ && /leaves\/s/ {
+      lps=""; avg=""; peak=""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[0-9]+$/ && $(i+1) == "leaves/s,") { lps = $i }
+        if ($i == "avg" && $(i+1) == "leaves/batch,") { avg = $(i-1) }
+        if ($i == "peak" && $(i+1) == "batch") { v = $(i+2); gsub(/,/, "", v); peak = v }
+      }
+      if (lps != "") printf "%s\t%s\t%s\n", lps, avg, peak
     }'
 }
 
 generate() {
-  local raw done_lines tsv src_desc
+  local raw src_desc
   src_desc=$([ -n "$SRC_FILE" ] && echo "file: $SRC_FILE" || echo "podman container: $CONTAINER")
   raw="$(read_logs 2>&1)" || { echo "Could not read logs ($src_desc)." >&2; return 1; }
-  done_lines="$(printf '%s\n' "$raw" | grep -F '] DONE ' || true)"
-  tsv="$(printf '%s\n' "$done_lines" | parse_done)"
+
+  local done_lines hw_lines infer_lines done_tsv hw_tsv infer_tsv
+  done_lines="$(printf '%s\n' "$raw"  | grep -F '] DONE '  || true)"
+  hw_lines="$(printf   '%s\n' "$raw"  | grep -F '[hw] '     || true)"
+  infer_lines="$(printf '%s\n' "$raw" | grep -F '[infer] '  | grep 'leaves/s' || true)"
+  done_tsv="$(printf  '%s\n' "$done_lines"  | parse_done)"
+  hw_tsv="$(printf    '%s\n' "$hw_lines"    | parse_hw)"
+  infer_tsv="$(printf '%s\n' "$infer_lines" | parse_infer)"
 
   {
     echo "# Training summary"
@@ -70,25 +107,89 @@ generate() {
     echo "_Generated $(date '+%Y-%m-%d %H:%M:%S') from ${src_desc}._"
     echo
 
-    if [ -z "$(printf '%s' "$tsv" | tr -d '[:space:]')" ]; then
+    # ── Hardware utilisation ──────────────────────────────────────────
+    if [ -n "$(printf '%s' "$hw_tsv" | tr -d '[:space:]')" ]; then
+      echo "## Hardware utilisation"
+      echo
+      printf '%s\n' "$hw_tsv" | awk -F'\t' '
+        BEGIN {
+          gpu_min=999; gpu_max=0; gpu_sum=0
+          cpu_sum=0; ram_sum=0; vram_sum=0; n=0
+        }
+        {
+          n++
+          cpu_sum  += $1
+          ram_sum  += $2
+          gpu_sum  += $4
+          vram_sum += $5
+          if ($4 < gpu_min) gpu_min = $4
+          if ($4 > gpu_max) gpu_max = $4
+          last_ram_gb = $3; last_vram_total = $6
+        }
+        END {
+          if (n > 0) {
+            printf "| Metric | Min | Mean | Max |\n"
+            printf "|--------|----:|-----:|----:|\n"
+            printf "| GPU    | %d%% | %d%% | %d%% |\n", gpu_min, gpu_sum/n, gpu_max
+            printf "| CPU    |  —  | %d%% |  —  |\n", cpu_sum/n
+            printf "| RAM    |  —  | %d%% (%.0fG) |  —  |\n", ram_sum/n, last_ram_gb
+            printf "| VRAM   |  —  | %d MiB / %d MiB |  —  |\n", vram_sum/n, last_vram_total
+            printf "\n_%d samples at ~60s intervals._\n", n
+          }
+        }'
+      echo
+    fi
+
+    # ── Inference throughput ──────────────────────────────────────────
+    if [ -n "$(printf '%s' "$infer_tsv" | tr -d '[:space:]')" ]; then
+      echo "## Inference server throughput"
+      echo
+      printf '%s\n' "$infer_tsv" | awk -F'\t' '
+        BEGIN {
+          lps_min=999999; lps_max=0; lps_sum=0
+          batch_sum=0; peak_max=0; n=0
+        }
+        {
+          n++
+          lps_sum += $1
+          batch_sum += $2
+          if ($1 < lps_min) lps_min = $1
+          if ($1 > lps_max) lps_max = $1
+          if ($3 > peak_max) peak_max = $3
+        }
+        END {
+          if (n > 0) {
+            printf "| Metric | Min | Mean | Max |\n"
+            printf "|--------|----:|-----:|----:|\n"
+            printf "| leaves/s     | %d | %d | %d |\n", lps_min, lps_sum/n, lps_max
+            printf "| avg batch    |  —  | %d |  —  |\n", batch_sum/n
+            printf "| peak batch   |  —  |  —  | %d |\n", peak_max
+            printf "\n_%d heartbeat lines at ~30s intervals._\n", n
+          }
+        }'
+      echo
+    fi
+
+    # ── Per-generation ────────────────────────────────────────────────
+    if [ -z "$(printf '%s' "$done_tsv" | tr -d '[:space:]')" ]; then
       echo "No completed generations yet (no \`DONE\` lines found — gen 1 may still be in progress)."
       return 0
     fi
 
     echo "## Per-generation"
     echo
-    printf '%s\n' "$tsv" | awk -F'\t' '
+    printf '%s\n' "$done_tsv" | awk -F'\t' '
       BEGIN {
-        print "| Gen | ploss | vloss | Arena | Result | Gen time | Elapsed |"
-        print "|----:|------:|------:|------:|:-------|---------:|:--------|"
+        print "| Gen | ploss | vloss | Arena | Result | Gen time | Samples |"
+        print "|----:|------:|------:|------:|:-------|---------:|--------:|"
       }
       { mark = ($5 == "PROMOTED") ? "**PROMOTED**" : $5
-        printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, mark, $6, $7 }'
+        printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, mark, $6, $8 }'
     echo
 
     echo "## Quick stats"
     echo
-    printf '%s\n' "$tsv" | awk -F'\t' '
+    printf '%s\n' "$done_tsv" | awk -F'\t' '
       { gens++; if ($5 == "PROMOTED") promos++
         last_p=$2; last_v=$3; last_a=$4; last_g=$1
         if (NR == 1) { first_p=$2; first_v=$3 } }
@@ -108,7 +209,10 @@ generate() {
     echo '```'
   } > "$OUT"
 
-  echo "Wrote $(printf '%s\n' "$tsv" | grep -c . ) generation(s) to $OUT"
+  echo "Wrote $(printf   '%s\n' "$done_tsv"  | grep -c . || echo 0) generation(s),"
+  echo "      $(printf   '%s\n' "$hw_tsv"    | grep -c . || echo 0) hw sample(s),"
+  echo "      $(printf   '%s\n' "$infer_tsv" | grep -c . || echo 0) infer heartbeat(s)"
+  echo "to $OUT"
 }
 
 if [ "$WATCH" -eq 1 ]; then
