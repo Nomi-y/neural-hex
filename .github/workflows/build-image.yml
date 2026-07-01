@@ -94,6 +94,7 @@ jobs:
             echo "preset=$PRESET"
             echo "cuda=$CUDA"
             echo "cuda_wheel=$CUDA_WHEEL"
+            echo "owner=$OWNER"
             echo "tags=${IMAGE}:latest,${IMAGE}:${DESC},${IMAGE}:sha-${SHORT}"
           } >> "$GITHUB_OUTPUT"
 
@@ -129,5 +130,5 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           # Registry cache (GHCR, unlimited) instead of gha (10GB cap → eviction →
           # re-downloads the 2.5GB torch wheel every few builds).
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/neural-hex:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/neural-hex:buildcache,mode=max
+          cache-from: type=registry,ref=ghcr.io/${{ steps.cfg.outputs.owner }}/neural-hex:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ steps.cfg.outputs.owner }}/neural-hex:buildcache,mode=max
