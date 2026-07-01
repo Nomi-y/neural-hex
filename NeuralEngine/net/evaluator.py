@@ -23,15 +23,21 @@ class Evaluator:
         self.net = net
         self.device = device
         self.net.eval()  # evaluator nets are inference-only; avoid toggling per call
-        # AMP on CUDA: the forward hits the tensor cores in half precision (~1.5-2× faster, esp. on
-        # Blackwell); the net trained under AMP so numerics match. Keeps this evaluator identical to
-        # the GPU inference server. INFERENCE_AMP=0 forces FP32. No effect on CPU/MPS.
+        # CUDA forward speedups (matching the GPU inference server so results stay identical): AMP
+        # (tensor-core half precision, the net trained under AMP) + channels_last (NHWC, the tensor
+        # cores' native conv layout). Leaf eval only guides MCTS, so half precision is fine.
+        # INFERENCE_AMP=0 forces FP32. No effect on CPU/MPS.
         self.amp = device == "cuda" and os.environ.get("INFERENCE_AMP", "1") != "0"
+        self.channels_last = device == "cuda"
+        if self.channels_last:
+            self.net = self.net.to(memory_format=torch.channels_last)
 
     @torch.no_grad()
     def evaluate(self, states: List[HexState]) -> Tuple[np.ndarray, np.ndarray]:
         planes = encode_batch(states)
         x = torch.from_numpy(planes).to(self.device, non_blocking=True)
+        if self.channels_last:
+            x = x.to(memory_format=torch.channels_last)
         with torch.autocast("cuda", enabled=self.amp):
             logits, values = self.net(x)
 

@@ -43,19 +43,22 @@ When a game finishes, a new seed is atomically claimed from a shared pool — th
 stays fed with a constant-size batch of leaves for the entire generation.  No
 decline as games complete.
 
-**Coalescing** (`INFERENCE_COALESCE_MS`, default 2 ms): the GPU server drains the queued
-burst of requests, then lingers this long for the steady trickle of new ones before firing —
-so it runs a few large forwards instead of many tiny ones.  A quiet gap (or `max_batch`) ends
-the batch, so it adapts to load.  Self-play is throughput-bound, not latency-bound, so trading
-a millisecond of latency for a much fuller batch is the highest-leverage way to keep the GPU
-pinned.  This is the main dial for leaves/s.
+**What actually bounds leaves/s — the forward is compute-bound.**  With this 24M-param net the
+network forward dominates the round-trip (the mp.Queue hop is ~0.3 ms; the FP32 forward is tens of
+ms), and it's *compute*-bound even at modest batch — so throughput ≈ batch ÷ forward-time, and a
+bigger batch just costs a proportionally longer forward.  That's why the two "obvious" batch levers
+**backfire** and are both off by default:
 
-**Pipelining** (`pipeline_shards`, default 1 = off): optionally splits each worker's games
-into groups and double-buffers their GPU evals (`RemoteEvaluator.submit`/`receive` let a worker
-hold several batches in flight), overlapping CPU search with GPU inference.  It's numerically
-identical to serial search.  In practice, with many worker processes the workers already overlap
-across each other, so sharding mainly fragments the per-request batch — it measured *lower*
-leaves/s on the 5090, hence off by default.  Coalescing is the better lever.
+- **Coalescing** (`INFERENCE_COALESCE_MS`, default 0): lingering for a fuller batch doesn't speed a
+  compute-bound forward, it only delays results the (synchronous) workers are blocked waiting on —
+  measured *slower* on the 5090 (12.5k → 11k at 2 ms → 9k at 4 ms + pipeline).
+- **Pipelining** (`pipeline_shards`, default 1 = off): splitting a worker's games into groups just
+  fragments each request into more, smaller forwards (more per-forward overhead) — also slower.
+
+The real dial is **making the forward itself faster**: AMP (FP16 tensor cores) + channels_last (NHWC)
+give ~1.8× on Turing and more on Blackwell, on by default (`INFERENCE_AMP=0` to disable).  Both
+`submit`/`receive` (async) and the coalescing knob remain for a future virtual-loss worker that could
+keep many leaves genuinely in flight per game.
 
 **Leaves vs. samples**: a *leaf* is one network evaluation during search
 (plane encoding → forward pass → policy + value).  The `[infer]` heartbeat logs
@@ -314,8 +317,8 @@ Knobs (all env, so they work with baked images):
 |-----|---------|---------|
 | `INFERENCE_SERVER` | on for CUDA | `0`/`1` — GPU inference server vs per-worker CPU eval. |
 | `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server fuses into one forward (bounds VRAM). |
-| `INFERENCE_AMP` | 1 | FP16 tensor-core leaf eval on CUDA (~1.6–2× the forward; net trained under AMP). `0` = FP32. |
-| `INFERENCE_COALESCE_MS` | 2 | Linger this long for more requests before firing a forward → bigger batches, GPU stays pinned. `0` = fire immediately. |
+| `INFERENCE_AMP` | 1 | FP16 tensor-core leaf eval on CUDA + channels_last (~1.8× the forward; net trained under AMP). `0` = FP32. |
+| `INFERENCE_COALESCE_MS` | 0 | Linger for more requests before firing a forward. Off by default: the forward is compute-bound so bigger batches don't help — lingering only adds latency (measured slower). |
 | `PIPELINE_SHARDS` | 1 | Per-worker double-buffering of GPU eval. `1` = off (best on the 5090); `2+` fragments batches. |
 | `NUM_ACTORS` | cores − (1 + GPUs) | Self-play / arena worker processes. |
 | `NUM_GPUS` | auto | Number of GPUs to use (auto = `torch.cuda.device_count()`). |

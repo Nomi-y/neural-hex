@@ -134,26 +134,30 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    # Leaf evaluation is the self-play bottleneck and needs no FP32 precision (it only guides MCTS).
-    # Run the forward under AMP on CUDA so convs/matmuls hit the tensor cores in half precision —
-    # ~1.5-2× the leaf throughput on modern GPUs (esp. Blackwell). The net was trained under AMP, so
-    # this matches its training numerics. INFERENCE_AMP=0 forces FP32.
+    # The forward is the self-play bottleneck: a big conv net on FP32 is compute-bound even at modest
+    # batch (so coalescing bigger batches doesn't help — measured). Two forward speedups on CUDA, both
+    # safe for leaf eval (it only guides MCTS, needs no FP32 precision) and matching how the net was
+    # trained: AMP (tensor-core half precision, ~1.6× on Turing, more on Blackwell) and channels_last
+    # (NHWC — the tensor cores' native conv layout, another ~1.15×). INFERENCE_AMP=0 forces FP32.
     amp = device == "cuda" and os.environ.get("INFERENCE_AMP", "1") != "0"
+    channels_last = device == "cuda"
 
     nets = []
     for st in np_states:
         net = build_net(cfg).to(device)
         net.load_state_dict(CleanStateDict({k: torch.from_numpy(v).to(device) for k, v in st.items()}))
         net.eval()
+        if channels_last:
+            net = net.to(memory_format=torch.channels_last)
         nets.append(net)
 
     report_every = float(os.environ.get("INFERENCE_LOG_EVERY", "30"))
-    # Coalescing window (ms): after draining the queued burst, linger this long for the steady
-    # trickle of new requests so the GPU runs large batches instead of many tiny ones. Self-play is
-    # throughput-bound, not latency-bound, so trading <coalesce_ms of latency for a much fuller batch
-    # is a clear win — the workers whose leaves join the batch would have waited on the GPU anyway.
-    # 0 disables (fire as soon as the queue drains — the old behaviour).
-    coalesce_s = max(0.0, float(os.environ.get("INFERENCE_COALESCE_MS", "2"))) / 1000.0
+    # Coalescing window (ms): after draining the queued burst, linger this long for more requests.
+    # DEFAULT 0 (off): with synchronous workers (each blocks on its one outstanding request) the
+    # server is starved, not saturated — lingering just delays results the workers are waiting on,
+    # so measured leaves/s FELL on the 5090 (12.5k at 0 → 11k at 2ms → 9k at 4ms+pipeline). The knob
+    # stays for a future async/virtual-loss worker that could actually keep the queue deep.
+    coalesce_s = max(0.0, float(os.environ.get("INFERENCE_COALESCE_MS", "0"))) / 1000.0
     print(f"{_ts()} [infer] server ready on {device}: {len(nets)} net(s), max_batch={max_batch}, "
           f"amp={'fp16' if amp else 'off'}, coalesce={coalesce_s * 1000:.0f}ms, "
           f"heartbeat every {report_every:.0f}s", flush=True)
@@ -200,6 +204,8 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
             planes = np.concatenate([it[3] for it in items], axis=0)
             masks = np.concatenate([it[4] for it in items], axis=0)
             x = torch.from_numpy(planes).to(device, non_blocking=True)
+            if channels_last:
+                x = x.to(memory_format=torch.channels_last)
             with torch.autocast("cuda", enabled=amp):
                 logits, values = nets[net_id](x)
             m = torch.from_numpy(masks).to(device, non_blocking=True)
