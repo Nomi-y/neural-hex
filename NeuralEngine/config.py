@@ -167,6 +167,11 @@ class NetConfig:
     in_planes: int = 5  # derived, not user-tunable
     value_hidden: int = _env_int("NET_VALUE_HIDDEN", 128, "net.value_hidden")
     use_se: bool = _env_bool("NET_SE", False, "net.use_se")  # squeeze-excitation blocks (board-wide context)
+    # Separate trunks (0 = use shared `blocks` tower for backward compat).
+    # When both are >0 each head gets its own residual tower — eliminates
+    # gradient competition between policy and value heads.
+    policy_blocks: int = _env_int("NET_POLICY_BLOCKS", 0, "net.policy_blocks")
+    value_blocks: int = _env_int("NET_VALUE_BLOCKS", 0, "net.value_blocks")
 
 
 @dataclass

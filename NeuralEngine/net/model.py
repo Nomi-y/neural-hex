@@ -1,10 +1,17 @@
-"""Policy + value network — a small AlphaZero-style residual ConvNet.
+"""Policy + value network — AlphaZero-style residual ConvNet.
 
 A convolutional residual tower feeds two heads:
   - policy: a distribution over the N*N+1 actions (cells + swap), in canonical orientation,
   - value:  a scalar in [-1, 1], the side-to-move's expected game result.
 
-Width/depth are config knobs (NetConfig) so the same code scales from a laptop smoke test to a VPS run.
+When policy_blocks / value_blocks are set (>0), each head gets its OWN residual tower
+after a shared stem.  This eliminates gradient competition between the heads — the
+value head no longer starves because the policy loss (~2.5 over 122 actions) dwarfs
+its signal (~0.15, a single scalar).  When unset (0), falls back to a single shared
+tower for backward compatibility with existing checkpoints.
+
+Width/depth are config knobs (NetConfig) so the same code scales from a laptop smoke
+test to a VPS run.
 """
 
 from __future__ import annotations
@@ -52,18 +59,31 @@ class _ResidualBlock(nn.Module):
 
 
 class HexNet(nn.Module):
-    def __init__(self, board_size: int, in_planes: int, channels: int, blocks: int, value_hidden: int,
-                 use_se: bool = False) -> None:
+    def __init__(self, board_size: int, in_planes: int, channels: int, blocks: int,
+                 value_hidden: int, use_se: bool = False,
+                 policy_blocks: int = 0, value_blocks: int = 0) -> None:
         super().__init__()
         self.board_size = board_size
         self.num_actions = board_size * board_size + 1
 
+        # Shared stem — cheap, just maps input planes to the channel width.
         self.stem = nn.Sequential(
             nn.Conv2d(in_planes, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
             nn.ReLU(inplace=True),
         )
-        self.tower = nn.Sequential(*[_ResidualBlock(channels, use_se) for _ in range(blocks)])
+
+        # Towers: separate if both values are set, else one shared tower.
+        if policy_blocks > 0 and value_blocks > 0:
+            self.policy_tower = nn.Sequential(
+                *[_ResidualBlock(channels, use_se) for _ in range(policy_blocks)])
+            self.value_tower = nn.Sequential(
+                *[_ResidualBlock(channels, use_se) for _ in range(value_blocks)])
+            self._separate = True
+        else:
+            self.tower = nn.Sequential(
+                *[_ResidualBlock(channels, use_se) for _ in range(blocks)])
+            self._separate = False
 
         # Policy head: 2 feature maps -> flat -> action logits (cells + swap).
         self.policy_conv = nn.Conv2d(channels, 2, 1, bias=False)
@@ -78,13 +98,19 @@ class HexNet(nn.Module):
 
     def forward(self, x: torch.Tensor):
         x = self.stem(x)
-        x = self.tower(x)
 
-        p = F.relu(self.policy_bn(self.policy_conv(x)))
+        if self._separate:
+            p = self.policy_tower(x)
+            v = self.value_tower(x)
+        else:
+            p = self.tower(x)
+            v = p
+
+        p = F.relu(self.policy_bn(self.policy_conv(p)))
         p = p.flatten(1)
         policy_logits = self.policy_fc(p)
 
-        v = F.relu(self.value_bn(self.value_conv(x)))
+        v = F.relu(self.value_bn(self.value_conv(v)))
         v = v.flatten(1)
         v = F.relu(self.value_fc1(v))
         value = torch.tanh(self.value_fc2(v)).squeeze(-1)
@@ -93,6 +119,8 @@ class HexNet(nn.Module):
 
 
 def build_net(cfg) -> HexNet:
+    pb = getattr(cfg.net, "policy_blocks", 0) or 0
+    vb = getattr(cfg.net, "value_blocks", 0) or 0
     return HexNet(
         board_size=cfg.game.board_size,
         in_planes=cfg.net.in_planes,
@@ -100,6 +128,8 @@ def build_net(cfg) -> HexNet:
         blocks=cfg.net.blocks,
         value_hidden=cfg.net.value_hidden,
         use_se=cfg.net.use_se,
+        policy_blocks=pb,
+        value_blocks=vb,
     )
 
 

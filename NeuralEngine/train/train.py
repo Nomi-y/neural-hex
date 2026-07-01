@@ -282,6 +282,8 @@ def _validate_checkpoint_config(ckpt_config: dict | None, cfg: Config) -> bool:
         ("board_size", cfg.game.board_size),
         ("channels", cfg.net.channels),
         ("blocks", cfg.net.blocks),
+        ("policy_blocks", cfg.net.policy_blocks),
+        ("value_blocks", cfg.net.value_blocks),
         ("use_se", cfg.net.use_se),
     ]
     for key, current in checks:
@@ -426,7 +428,10 @@ def main() -> None:
     if device == "cuda":
         _log_gpu_device()
     log(f"[train]   board     = {cfg.game.board_size}×{cfg.game.board_size}  swap={cfg.game.swap_rule}")
-    log(f"[train]   net       = {cfg.net.channels} ch × {cfg.net.blocks} blocks  value_hidden={cfg.net.value_hidden}  se={cfg.net.use_se}")
+    net_blocks = f"{cfg.net.blocks} blocks"
+    if cfg.net.policy_blocks > 0 and cfg.net.value_blocks > 0:
+        net_blocks = f"policy={cfg.net.policy_blocks} + value={cfg.net.value_blocks} blocks (separate trunks)"
+    log(f"[train]   net       = {cfg.net.channels} ch × {net_blocks}  value_hidden={cfg.net.value_hidden}  se={cfg.net.use_se}")
     log(f"[train]   mcts      = {cfg.mcts.simulations} sims  cpuct={cfg.mcts.c_puct}  "
         f"dirichlet=({cfg.mcts.dirichlet_alpha},{cfg.mcts.dirichlet_epsilon})  "
         f"solver≤{cfg.mcts.solver_empty_threshold}  vc={cfg.mcts.use_virtual_connection}")
@@ -654,6 +659,8 @@ def _config_summary(cfg: Config) -> dict:
         "in_planes": cfg.net.in_planes,
         "channels": cfg.net.channels,
         "blocks": cfg.net.blocks,
+        "policy_blocks": cfg.net.policy_blocks,
+        "value_blocks": cfg.net.value_blocks,
         "value_hidden": cfg.net.value_hidden,
         "use_se": cfg.net.use_se,
     }
