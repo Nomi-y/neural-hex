@@ -27,8 +27,8 @@ class Evaluator:
         # (tensor-core half precision, the net trained under AMP) + channels_last (NHWC, the tensor
         # cores' native conv layout). Leaf eval only guides MCTS, so half precision is fine.
         # INFERENCE_AMP=0 forces FP32. No effect on CPU/MPS.
-        self.amp = device == "cuda" and os.environ.get("INFERENCE_AMP", "1") != "0"
-        self.channels_last = device == "cuda"
+        self.amp = device.startswith("cuda") and os.environ.get("INFERENCE_AMP", "1") != "0"
+        self.channels_last = device.startswith("cuda")
         if self.channels_last:
             self.net = self.net.to(memory_format=torch.channels_last)
 

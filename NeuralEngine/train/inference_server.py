@@ -129,7 +129,7 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
     from net.model import build_net, CleanStateDict
 
     torch.set_grad_enabled(False)
-    if device == "cuda" and torch.cuda.is_available():
+    if device.startswith("cuda") and torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -139,8 +139,8 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
     # safe for leaf eval (it only guides MCTS, needs no FP32 precision) and matching how the net was
     # trained: AMP (tensor-core half precision, ~1.6× on Turing, more on Blackwell) and channels_last
     # (NHWC — the tensor cores' native conv layout, another ~1.15×). INFERENCE_AMP=0 forces FP32.
-    amp = device == "cuda" and os.environ.get("INFERENCE_AMP", "1") != "0"
-    channels_last = device == "cuda"
+    amp = device.startswith("cuda") and os.environ.get("INFERENCE_AMP", "1") != "0"
+    channels_last = device.startswith("cuda")
 
     nets = []
     for st in np_states:

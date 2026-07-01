@@ -163,7 +163,7 @@ arena_timeout = 900.0
 checkpoint_dir = "checkpoints"
 # [SAVE_EVERY_CKPT] If true, also save a per-generation snapshot gen_NNNN.pt (more disk).
 # false keeps only latest.pt + best.pt.
-save_every_checkpoint = false
+save_every_checkpoint = true
 # [LOG_DIR] Directory for timestamped run logs (one file per run). Bind-mount to keep them.
 log_dir = "logs"
 # [SEED] RNG seed for reproducibility. 0 is fine; change to vary a run.
