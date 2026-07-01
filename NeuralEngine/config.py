@@ -269,19 +269,24 @@ class Config:
     device: str = field(default_factory=_detect_device)
 
     def resolve_actors(self) -> int:
-        """How many self-play/arena worker processes to launch — one CPU search worker per usable core.
+        """How many self-play/arena worker processes to launch.
 
-        Uses available_cpus() (cgroup/affinity-aware), NOT mp.cpu_count(): on a 16-vCPU container the
-        host's 64 logical cores would otherwise spawn 63 workers and thrash. Reserve one core for the
-        main loop, plus one per GPU inference server when it's on (a CPU-starved server can't keep its
-        GPU fed) — so on a multi-GPU box, where CPUs scale with GPUs, the reserve scales too. MPS
-        (Apple) stays single-actor. Override with NUM_ACTORS."""
+        Capped so each worker runs at least 32 concurrent games — below that,
+        batch fragmentation destroys GPU utilisation (measured: 38 workers ×
+        13 games → avg batch 52 leaves → 30% GPU util, 2.9k leaves/s).  Fewer
+        workers with fatter per-worker batches keeps the GPU fed.  Override
+        with NUM_ACTORS."""
         if self.train.num_actors > 0:
             return self.train.num_actors
         if self.device == "mps":
             return 1
-        reserve = (1 + self.num_gpus()) if self.use_inference_server() else 1
-        return max(1, available_cpus() - reserve)
+        reserve = 2 if self.use_inference_server() else 1
+        max_by_cpu = max(1, available_cpus() - reserve)
+        # Each worker must have ≥32 concurrent games so even a partial wave
+        # produces a GPU-worthy batch.  Lower → batch collapse.
+        min_concurrent = 32
+        max_by_games = max(1, self.selfplay.parallel_games // min_concurrent)
+        return max(1, min(max_by_cpu, max_by_games))
 
     def worker_eval_device(self) -> str:
         """Inference device for the fanned-out self-play / arena WORKER processes.
@@ -312,20 +317,8 @@ class Config:
         return self.device == "cuda"
 
     def num_gpus(self) -> int:
-        """Number of GPUs available for inference servers. Auto-detected via
-        torch.cuda.device_count(); override with NUM_GPUS env var.  On CPU/MPS
-        returns 1 (single server running on that device)."""
-        override = os.environ.get("NUM_GPUS")
-        if override:
-            return max(1, int(override))
-        if self.device != "cuda":
-            return 1
-        try:
-            import torch
-            if torch.cuda.is_available():
-                return max(1, torch.cuda.device_count())
-        except Exception:
-            pass
+        """Always 1 — single GPU only.  Multi-GPU was removed: inter-worker
+        batch fragmentation destroys utilisation on high-core boxes."""
         return 1
 
 

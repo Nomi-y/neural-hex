@@ -192,25 +192,14 @@ def _claim_worker_index(counter, lock, num_workers: int) -> int:
     return idx % num_workers
 
 
-def _init_worker_remote(cfg: Config, servers_data, counter, lock,
+def _init_worker_remote(cfg: Config, req_q, resp_qs, counter, lock,
                         stream_args=None) -> None:
-    """Server mode (single or multi-GPU): the worker does CPU search and evaluates
-    leaves via its assigned GPU's inference server.
-
-    servers_data = [(req_q, resp_qs), ...] — one entry per GPU.  The worker claims
-    a global index, picks its GPU via index % num_gpus, and then its per-GPU worker
-    slot via index // num_gpus.
-
-    If stream_args=(game_counter, seed_counter, stream_lock, total_games) is
-    provided, the worker runs in streaming mode — continuously replacing finished
-    games from a shared seed pool."""
+    """Server mode: each worker claims a response-queue slot and evaluates leaves
+    through the single GPU inference server."""
     from train.inference_server import RemoteEvaluator
-    idx = _claim_worker_index(counter, lock, sum(len(sd[1]) for sd in servers_data))
-    gpu = idx % len(servers_data)
-    req_q, resp_qs = servers_data[gpu]
-    worker_slot = (idx // len(servers_data)) % len(resp_qs)
+    idx = _claim_worker_index(counter, lock, len(resp_qs))
     _WORKER["cfg"] = cfg
-    _WORKER["evaluator"] = RemoteEvaluator(0, worker_slot, req_q, resp_qs[worker_slot])
+    _WORKER["evaluator"] = RemoteEvaluator(0, idx, req_q, resp_qs[idx])
     if stream_args is not None:
         _WORKER["stream"] = stream_args
 
@@ -435,21 +424,9 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
     servers: list = []
     if use_server:
         from train.inference_server import InferenceServer
-        ngpus = cfg.num_gpus()
-        workers_per_gpu = actors // ngpus
-        alloc = [workers_per_gpu] * ngpus
-        for i in range(actors - workers_per_gpu * ngpus):
-            alloc[i] += 1
-        alloc = [a for a in alloc if a > 0]
-        ngpus = len(alloc)
-
-        for gpu_id, nw in enumerate(alloc):
-            srv = InferenceServer(cfg, [np_state], cfg.device, nw, ctx, gpu_id=gpu_id)
-            srv.start()
-            servers.append(srv)
-
-        servers_data = [(s.req_q, s.resp_qs) for s in servers]
-        counter, lock = servers[0].counter, servers[0].lock
+        srv = InferenceServer(cfg, [np_state], cfg.device, actors, ctx)
+        srv.start()
+        servers.append(srv)
 
         # Streaming: shared game_counter + seed_counter.  Each worker maintains
         # parallel_games active games, atomically claiming new seeds from the
@@ -465,12 +442,10 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         read_progress = lambda: game_counter.value  # completed-game count → watchdog measures progress
         tasks = [None] * actors  # dummy — real work is driven by shared counters
         fn = _play_worker_stream
-        initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock, stream_args)
-        gpu_label = (f"gpu-server({cfg.device})" if ngpus == 1
-                     else f"gpu-server({ngpus}×{cfg.device})")
+        initializer, initargs = _init_worker_remote, (cfg, srv.req_q, srv.resp_qs, srv.counter, srv.lock, stream_args)
         shards = max(1, cfg.mcts.pipeline_shards)
         log(f"[selfplay] fanning {num_games} games across {actors} actors "
-            f"(eval on {gpu_label}, streaming {max_conc} concurrent per worker"
+            f"(eval on gpu-server({cfg.device}), streaming {max_conc} concurrent per worker"
             + (f", {shards}-way pipeline" if shards > 1 else "") + ")")
     else:
         chunk_dev = cfg.worker_eval_device()

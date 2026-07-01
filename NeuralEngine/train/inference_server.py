@@ -155,11 +155,18 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
     # Coalescing window (ms): after draining the queued burst, linger this long for more requests.
     # DEFAULT 0 (off): with synchronous workers (each blocks on its one outstanding request) the
     # server is starved, not saturated — lingering just delays results the workers are waiting on,
-    # so measured leaves/s FELL on the 5090 (12.5k at 0 → 11k at 2ms → 9k at 4ms+pipeline). The knob
-    # stays for a future async/virtual-loss worker that could actually keep the queue deep.
+    # so measured leaves/s FELL on the 5090 (12.5k at 0 → 11k at 2ms → 9k at 4ms+pipeline).
     coalesce_s = max(0.0, float(os.environ.get("INFERENCE_COALESCE_MS", "0"))) / 1000.0
+    # Minimum leaves before firing a forward.  Without this, scattered submissions
+    # from many workers produce tiny batches that waste the GPU on kernel-launch
+    # overhead (measured: 52 avg leaves/batch → 30% GPU util).  64 is one decent
+    # worker-submission worth (2 workers × 32 concurrent games).
+    min_batch = int(os.environ.get("INFERENCE_MIN_BATCH", "64"))
+    # Max grace period (s) to wait for more leaves when the batch is below min_batch
+    # and coalesce is off.  Short enough that workers don't feel the delay.
+    _MIN_BATCH_GRACE = 0.001  # 1ms
     print(f"{_ts()} [infer] server ready on {device}: {len(nets)} net(s), max_batch={max_batch}, "
-          f"amp={'fp16' if amp else 'off'}, coalesce={coalesce_s * 1000:.0f}ms, "
+          f"min_batch={min_batch}, amp={'fp16' if amp else 'off'}, coalesce={coalesce_s * 1000:.0f}ms, "
           f"heartbeat every {report_every:.0f}s", flush=True)
     n_batches = n_leaves = max_seen = 0
     last_report = time.time()
@@ -172,23 +179,31 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
         if first == _STOP:
             break
 
-        # Coalesce requests into one forward, capped at max_batch to bound server memory: drain the
-        # burst already queued, then (if a window is set) briefly wait for more arrivals. A quiet gap
-        # of coalesce_s — or the cap — ends the batch, so the server adapts to load: it fills big
-        # batches under pressure and still fires promptly when the trickle stops.
+        # Accumulate requests into one forward, capped at max_batch.  First drain
+        # whatever is already queued (burst from simultaneous worker submissions).
+        # Then: if coalesce is on, linger for it.  If off but the batch is below
+        # min_batch, give a 1ms grace period for straggler submissions to arrive
+        # — prevents the "many scattered workers → tiny forward" GPU-starvation
+        # case without the full coalesce latency penalty.
         batch = [first]
         total = first[3].shape[0]
         stop = False
         while total < max_batch:
             try:
-                item = req_q.get_nowait()  # fast path: take whatever is already waiting
+                item = req_q.get_nowait()  # fast path: drain everything waiting
             except queue.Empty:
-                if coalesce_s <= 0:
-                    break
-                try:
-                    item = req_q.get(timeout=coalesce_s)  # linger for the next arrival
-                except queue.Empty:
-                    break  # quiet gap → fire what we have
+                if coalesce_s > 0:
+                    try:
+                        item = req_q.get(timeout=coalesce_s)
+                    except queue.Empty:
+                        break
+                elif total >= min_batch:
+                    break  # decent batch, fire immediately
+                else:
+                    try:
+                        item = req_q.get(timeout=_MIN_BATCH_GRACE)
+                    except queue.Empty:
+                        break  # nothing arrived in the grace window → fire
             if item == _STOP:
                 stop = True
                 break
@@ -236,17 +251,12 @@ def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) ->
 
 
 class InferenceServer:
-    """Lifecycle owner: spins up the GPU server process and the queues, hands out RemoteEvaluators.
+    """Lifecycle owner: spins up a SINGLE GPU server process, hands out RemoteEvaluators.
 
-    Queues/primitives come from the caller's spawn context so they're shareable with the Pool
-    workers. resp_qs has one queue per worker; a worker claims an index via next_worker_index()
-    in the Pool initializer (shared counter under a lock).
+    resp_qs has one queue per worker; a worker claims an index via a shared counter
+    under a lock in the Pool initializer."""
 
-    Pass `gpu_id` to bind to a specific GPU (cuda:N).  When None, uses the `device` arg directly
-    (single-GPU or CPU fallback)."""
-
-    def __init__(self, cfg, np_states: List[dict], device: str, num_workers: int, ctx,
-                 gpu_id: int | None = None) -> None:
+    def __init__(self, cfg, np_states: List[dict], device: str, num_workers: int, ctx) -> None:
         self.num_nets = len(np_states)
         self.num_workers = num_workers
         self.req_q = ctx.Queue()
@@ -256,10 +266,9 @@ class InferenceServer:
         self.stop_evt = ctx.Event()
         env_mb = int(os.environ.get("INFERENCE_MAX_BATCH", "0"))
         self.max_batch = env_mb if env_mb > 0 else 2048
-        dev = f"cuda:{gpu_id}" if gpu_id is not None else device
         self._proc = ctx.Process(
             target=_server_loop,
-            args=(cfg, np_states, dev, self.req_q, self.resp_qs, self.stop_evt, self.max_batch),
+            args=(cfg, np_states, device, self.req_q, self.resp_qs, self.stop_evt, self.max_batch),
             daemon=True,
         )
 
