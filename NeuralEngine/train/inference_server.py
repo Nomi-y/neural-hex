@@ -184,9 +184,13 @@ class InferenceServer:
 
     Queues/primitives come from the caller's spawn context so they're shareable with the Pool
     workers. resp_qs has one queue per worker; a worker claims an index via next_worker_index()
-    in the Pool initializer (shared counter under a lock)."""
+    in the Pool initializer (shared counter under a lock).
 
-    def __init__(self, cfg, np_states: List[dict], device: str, num_workers: int, ctx) -> None:
+    Pass `gpu_id` to bind to a specific GPU (cuda:N).  When None, uses the `device` arg directly
+    (single-GPU or CPU fallback)."""
+
+    def __init__(self, cfg, np_states: List[dict], device: str, num_workers: int, ctx,
+                 gpu_id: int | None = None) -> None:
         self.num_nets = len(np_states)
         self.num_workers = num_workers
         self.req_q = ctx.Queue()
@@ -196,9 +200,10 @@ class InferenceServer:
         self.stop_evt = ctx.Event()
         env_mb = int(os.environ.get("INFERENCE_MAX_BATCH", "0"))
         self.max_batch = env_mb if env_mb > 0 else 2048
+        dev = f"cuda:{gpu_id}" if gpu_id is not None else device
         self._proc = ctx.Process(
             target=_server_loop,
-            args=(cfg, np_states, device, self.req_q, self.resp_qs, self.stop_evt, self.max_batch),
+            args=(cfg, np_states, dev, self.req_q, self.resp_qs, self.stop_evt, self.max_batch),
             daemon=True,
         )
 

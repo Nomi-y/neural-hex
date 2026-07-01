@@ -129,12 +129,20 @@ def _claim_worker_index(counter, lock, num_workers: int) -> int:
     return idx % num_workers
 
 
-def _init_worker_remote(cfg: Config, req_q, resp_qs, counter, lock) -> None:
-    """Server mode: the worker does CPU search and evaluates leaves via the GPU inference server."""
+def _init_worker_remote(cfg: Config, servers_data, counter, lock) -> None:
+    """Server mode (single or multi-GPU): the worker does CPU search and evaluates
+    leaves via its assigned GPU's inference server.
+
+    servers_data = [(req_q, resp_qs), ...] — one entry per GPU.  The worker claims
+    a global index, picks its GPU via index % num_gpus, and then its per-GPU worker
+    slot via index // num_gpus."""
     from train.inference_server import RemoteEvaluator
-    idx = _claim_worker_index(counter, lock, len(resp_qs))
+    idx = _claim_worker_index(counter, lock, sum(len(sd[1]) for sd in servers_data))
+    gpu = idx % len(servers_data)
+    req_q, resp_qs = servers_data[gpu]
+    worker_slot = (idx // len(servers_data)) % len(resp_qs)
     _WORKER["cfg"] = cfg
-    _WORKER["evaluator"] = RemoteEvaluator(0, idx, req_q, resp_qs[idx])
+    _WORKER["evaluator"] = RemoteEvaluator(0, worker_slot, req_q, resp_qs[worker_slot])
 
 
 def _play_chunk(args) -> Tuple[int, List[Sample]]:
@@ -151,14 +159,22 @@ def split_evenly(total: int, parts: int) -> List[int]:
     return [base + (1 if i < extra else 0) for i in range(parts)]
 
 
-def chunk_sizes(cfg: Config, num_games: int, actors: int, device: str = None) -> List[int]:
+def chunk_sizes(cfg: Config, num_games: int, actors: int, device: str = None,
+                streaming: bool = False) -> List[int]:
     """Per-task game counts, tuned to the worker inference `device` (default cfg.device).
 
-    GPU: chunks sized to parallel_games (the optimal batch size for the GPU forward pass),
-    with 2-3× more chunks than workers so imap_unordered naturally balances — fast workers
-    grab extra chunks instead of idling behind a slow one.  CPU: many small chunks so fast
-    cores keep grabbing work; batch size is irrelevant there (the net runs one sample at a
-    time on CPU regardless)."""
+    GPU server streaming mode: 1-game chunks so every worker always has a fresh game
+    at full search depth — no GPU starvation as games finish.  (The old chunked approach
+    created 2−3× chunks than workers with parallel_games-sized chunks, but workers within
+    a chunk processed games sequentially, so the GPU saw a declining active-game count.)
+
+    GPU non-server: chunks sized to parallel_games with 2-3× more chunks than workers
+    for load-balancing.
+
+    CPU: many small chunks so fast cores keep grabbing work.
+    """
+    if streaming:
+        return [1] * num_games  # every game is its own task
     device = device or cfg.device
     if device == "cuda":
         chunk = max(1, cfg.selfplay.parallel_games)
@@ -219,14 +235,6 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
 
     np_state = to_numpy_state(state_dict)
     use_server = cfg.use_inference_server()
-    # Server mode: workers search on CPU but evaluate on the GPU, so size chunks the GPU way.
-    chunk_dev = cfg.device if use_server else cfg.worker_eval_device()
-    sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
-    tasks = [(size, base_seed + i) for i, size in enumerate(sizes)]
-    eval_label = f"gpu-server({cfg.device})" if use_server else chunk_dev
-    log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {eval_label}), "
-        f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
-        f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
     ctx = mp.get_context("spawn")
     results: List[List[Sample]] = []
     done = 0
@@ -239,23 +247,50 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         if progress:
             progress(done, num_games)
 
-    server = None
+    servers: list = []
     if use_server:
         from train.inference_server import InferenceServer
-        server = InferenceServer(cfg, [np_state], cfg.device, actors, ctx)
-        server.start()
-        initializer, initargs = _init_worker_remote, (cfg, server.req_q, server.resp_qs,
-                                                      server.counter, server.lock)
+        ngpus = cfg.num_gpus()
+        workers_per_gpu = actors // ngpus
+        # Ensure at least 1 worker per GPU; leftover workers go to GPU 0.
+        alloc = [workers_per_gpu] * ngpus
+        for i in range(actors - workers_per_gpu * ngpus):
+            alloc[i] += 1
+        alloc = [a for a in alloc if a > 0]
+        ngpus = len(alloc)
+
+        for gpu_id, nw in enumerate(alloc):
+            srv = InferenceServer(cfg, [np_state], cfg.device, nw, ctx, gpu_id=gpu_id)
+            srv.start()
+            servers.append(srv)
+
+        # servers_data = [(req_q, resp_qs), ...] for the worker initializer
+        servers_data = [(s.req_q, s.resp_qs) for s in servers]
+        counter, lock = servers[0].counter, servers[0].lock
+        initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock)
+
+        # Streaming: 1-game chunks keep every worker fed with fresh games.
+        chunk_dev = cfg.device
+        sizes = chunk_sizes(cfg, num_games, actors, chunk_dev, streaming=True)
+        gpu_label = f"gpu-server({cfg.device})" if ngpus == 1 else f"gpu-server({ngpus}×{cfg.device})"
     else:
+        chunk_dev = cfg.worker_eval_device()
+        sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
         initializer, initargs = _init_worker, (cfg, np_state, chunk_dev)
+        gpu_label = chunk_dev
+
+    tasks = [(size, base_seed + i) for i, size in enumerate(sizes)]
+    log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {gpu_label}), "
+        f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
+        f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
 
     try:
         with ctx.Pool(processes=actors, initializer=initializer, initargs=initargs) as pool:
             it = pool.imap_unordered(_play_chunk, tasks)
             ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on)
     finally:
-        if server is not None:
-            server.stop()
+        for srv in servers:
+            srv.stop()
     if not ok:
         log(f"[self-play] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s with no "
             f"result — terminated pool, continuing with {done}/{num_games} games "

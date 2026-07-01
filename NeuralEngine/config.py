@@ -309,6 +309,23 @@ class Config:
             return override.strip().lower() in ("1", "true", "yes")
         return self.device == "cuda"
 
+    def num_gpus(self) -> int:
+        """Number of GPUs available for inference servers. Auto-detected via
+        torch.cuda.device_count(); override with NUM_GPUS env var.  On CPU/MPS
+        returns 1 (single server running on that device)."""
+        override = os.environ.get("NUM_GPUS")
+        if override:
+            return max(1, int(override))
+        if self.device != "cuda":
+            return 1
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return max(1, torch.cuda.device_count())
+        except Exception:
+            pass
+        return 1
+
 
 def load() -> Config:
     return Config()

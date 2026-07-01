@@ -93,14 +93,18 @@ def _init_arena_worker(cfg: Config, cand_np, best_np, device: str) -> None:
     _ARENA["best"] = build_eval_net(cfg, best_np, device)
 
 
-def _init_arena_worker_remote(cfg: Config, req_q, resp_qs, counter, lock) -> None:
-    """Server mode: both nets live on the GPU server (net_id 0=candidate, 1=best); the worker
-    searches on CPU and evaluates each through its RemoteEvaluator."""
+def _init_arena_worker_remote(cfg: Config, servers_data, counter, lock) -> None:
+    """Server mode (single or multi-GPU): both nets live on the GPU server
+    (net_id 0=candidate, 1=best); the worker searches on CPU and evaluates
+    each through its assigned GPU's RemoteEvaluator."""
     from train.inference_server import RemoteEvaluator
-    idx = _claim_worker_index(counter, lock, len(resp_qs))
+    idx = _claim_worker_index(counter, lock, sum(len(sd[1]) for sd in servers_data))
+    gpu = idx % len(servers_data)
+    req_q, resp_qs = servers_data[gpu]
+    worker_slot = (idx // len(servers_data)) % len(resp_qs)
     _ARENA["cfg"] = cfg
-    _ARENA["candidate"] = RemoteEvaluator(0, idx, req_q, resp_qs[idx])
-    _ARENA["best"] = RemoteEvaluator(1, idx, req_q, resp_qs[idx])
+    _ARENA["candidate"] = RemoteEvaluator(0, worker_slot, req_q, resp_qs[worker_slot])
+    _ARENA["best"] = RemoteEvaluator(1, worker_slot, req_q, resp_qs[worker_slot])
 
 
 def _play_arena_chunk(args):
@@ -126,16 +130,6 @@ def play_match_parallel(cfg: Config, cand_state, best_state, num_games: int, sim
         return _run_games(cfg, candidate, best, num_games, simulations, rng, 0, progress) / num_games
 
     use_server = cfg.use_inference_server()
-    chunk_dev = cfg.device if use_server else cfg.worker_eval_device()
-    sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
-    # color_offset = games preceding this chunk, so the RED/BLUE alternation is global, not per-chunk.
-    offsets = np.cumsum([0] + sizes[:-1]).tolist()
-    tasks = [(size, int(off), simulations, base_seed + i)
-             for i, (size, off) in enumerate(zip(sizes, offsets))]
-    eval_label = f"gpu-server({cfg.device})" if use_server else chunk_dev
-    log(f"[arena] fanning {num_games} games across {actors} actors (eval on {eval_label}), "
-        f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
-        f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
     ctx = mp.get_context("spawn")
     total_wins = 0
     done = 0
@@ -148,23 +142,47 @@ def play_match_parallel(cfg: Config, cand_state, best_state, num_games: int, sim
         if progress:
             progress(done, num_games)
 
-    server = None
+    servers: list = []
     if use_server:
         from train.inference_server import InferenceServer
-        server = InferenceServer(cfg, [cand_np, best_np], cfg.device, actors, ctx)
-        server.start()
-        initializer, initargs = _init_arena_worker_remote, (cfg, server.req_q, server.resp_qs,
-                                                            server.counter, server.lock)
+        ngpus = cfg.num_gpus()
+        workers_per_gpu = actors // ngpus
+        alloc = [workers_per_gpu] * ngpus
+        for i in range(actors - workers_per_gpu * ngpus):
+            alloc[i] += 1
+        alloc = [a for a in alloc if a > 0]
+        ngpus = len(alloc)
+
+        for gpu_id, nw in enumerate(alloc):
+            srv = InferenceServer(cfg, [cand_np, best_np], cfg.device, nw, ctx, gpu_id=gpu_id)
+            srv.start()
+            servers.append(srv)
+
+        servers_data = [(s.req_q, s.resp_qs) for s in servers]
+        counter, lock = servers[0].counter, servers[0].lock
+        initializer, initargs = _init_arena_worker_remote, (cfg, servers_data, counter, lock)
+        sizes = chunk_sizes(cfg, num_games, actors, cfg.device, streaming=True)
+        gpu_label = f"gpu-server({cfg.device})" if ngpus == 1 else f"gpu-server({ngpus}×{cfg.device})"
     else:
+        chunk_dev = cfg.worker_eval_device()
+        sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
         initializer, initargs = _init_arena_worker, (cfg, cand_np, best_np, chunk_dev)
+        gpu_label = chunk_dev
+
+    offsets = np.cumsum([0] + sizes[:-1]).tolist()
+    tasks = [(size, int(off), simulations, base_seed + i)
+             for i, (size, off) in enumerate(zip(sizes, offsets))]
+    log(f"[arena] fanning {num_games} games across {actors} actors (eval on {gpu_label}), "
+        f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
+        f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
 
     try:
         with ctx.Pool(processes=actors, initializer=initializer, initargs=initargs) as pool:
             it = pool.imap_unordered(_play_arena_chunk, tasks)
             ok = drain_pool(pool, it, len(tasks), cfg.train.arena_timeout, _on)
     finally:
-        if server is not None:
-            server.stop()
+        for srv in servers:
+            srv.stop()
     if not ok:
         log(f"[arena] WARNING: worker watchdog fired after {cfg.train.arena_timeout:.0f}s with no result "
             f"— terminated pool. Scoring {done}/{num_games} completed games; the rest count as losses, "
