@@ -189,15 +189,19 @@ The container bakes in `hyperparams.toml` (your config) and handles torch instal
 # A run that still lands on too-old a driver aborts loudly (it won't waste the GPU
 # silently training on CPU). Set ALLOW_CPU=1 to force an intentional CPU run.
 
+# Checkpoints and logs default to /workspace (baked into the image) so a run persists to a
+# mounted volume with no flags — bind-mount host dirs there (or, on RunPod, attach a network
+# volume at /workspace and pass nothing).
+
 # Run (CPU):
 mkdir -p checkpoints logs
-docker run -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
+docker run -v ./checkpoints:/workspace/checkpoints -v ./logs:/workspace/logs neuralengine
 
 # Run (GPU):
-docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
+docker run --gpus all -v ./checkpoints:/workspace/checkpoints -v ./logs:/workspace/logs neuralengine
 
-# Resume stopped training — same command. Checkpoints and logs persist in bind mounts.
-# Override a setting:  docker run -e TRAIN_HOURS=12 ... neuralengine
+# Resume stopped training — same command. Checkpoints and logs persist in the mounted volume.
+# Override the location:  docker run -e CHECKPOINT_DIR=/data/ckpt -e LOG_DIR=/data/logs ... neuralengine
 ```
 
 The container auto-detects docker vs podman. Logs are written to both stdout and the `logs/`
@@ -250,9 +254,13 @@ GitHub → your profile → *Packages* → `neural-hex` → *Package settings* �
 ```bash
 docker pull ghcr.io/<owner>/neural-hex:latest    # <owner> lowercase, e.g. nomi-y
 mkdir -p checkpoints logs
-docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs \
+docker run --gpus all -v ./checkpoints:/workspace/checkpoints -v ./logs:/workspace/logs \
   ghcr.io/<owner>/neural-hex:latest
 # Pin a specific config:  ...neural-hex:cuda-affordable-11   (or :sha-<commit>)
+
+# On RunPod: attach a network volume (mounts at /workspace) and pass no volume flags at all —
+# best.pt / latest.pt / logs land on the volume automatically and survive the pod. ~10 GB is
+# plenty (latest.pt is ~2 GB: net + optimizer + 500k-sample replay buffer; ~4 GB peak mid-save).
 ```
 
 If you keep the package private instead, log in first with a PAT that has `read:packages`:

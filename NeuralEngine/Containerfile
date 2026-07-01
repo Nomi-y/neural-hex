@@ -3,14 +3,15 @@
 # Build:  ./build_container.sh
 #         (reads hyperparams.toml, bakes it in, optionally applies a preset)
 #
-# Run (CPU):    docker run -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
-# Run (GPU):    docker run --gpus all -v ./checkpoints:/app/checkpoints -v ./logs:/app/logs neuralengine
+# Run (CPU):    docker run -v ./checkpoints:/workspace/checkpoints -v ./logs:/workspace/logs neuralengine
+# Run (GPU):    docker run --gpus all -v ./checkpoints:/workspace/checkpoints -v ./logs:/workspace/logs neuralengine
 #
 # The hyperparams.toml IS the configuration — edit it before building.
 # You can still override any value at runtime with -e, e.g.:
-#   docker run -e TRAIN_HOURS=12 -v ./checkpoints:/app/checkpoints neuralengine
+#   docker run -e TRAIN_HOURS=12 -v ./checkpoints:/workspace/checkpoints neuralengine
 #
-# Checkpoints and logs land in bind-mounted directories so they persist across restarts.
+# Checkpoints and logs default to /workspace (see ENV below) so a run persists to a mounted
+# network volume (e.g. RunPod /workspace) with no flags — bind-mount or attach a volume there.
 
 FROM docker.io/python:3.12-slim
 WORKDIR /app
@@ -68,6 +69,15 @@ RUN python test_logging.py
 # you lose the 1.5–2× training speedup).  This RUN fails the Docker build NOW
 # if gcc or stdlib.h is missing — the image never reaches GHCR broken.
 RUN echo '#include <stdlib.h>' | gcc -x c -c - -o /dev/null
+
+# ── Persistent output defaults ─────────────────────────────────────────────
+# Checkpoints and logs default to /workspace so a deployment writes to a mounted network volume
+# (e.g. RunPod's /workspace, which persists after the pod stops) WITHOUT needing -e every time —
+# forgetting the override once would otherwise write to the container's ephemeral disk and lose the
+# run. Set AFTER the build guards so the build never creates /workspace. A `docker run -e
+# CHECKPOINT_DIR=… / -e LOG_DIR=…` still wins (env overrides ENV); the app makedirs them at startup.
+ENV CHECKPOINT_DIR=/workspace/checkpoints \
+    LOG_DIR=/workspace/logs
 
 # Entrypoint script logs GPU info, starts CUDA MPS (best-effort), then launches training.
 COPY entrypoint.sh .
