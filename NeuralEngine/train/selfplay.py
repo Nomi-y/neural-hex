@@ -159,22 +159,13 @@ def split_evenly(total: int, parts: int) -> List[int]:
     return [base + (1 if i < extra else 0) for i in range(parts)]
 
 
-def chunk_sizes(cfg: Config, num_games: int, actors: int, device: str = None,
-                streaming: bool = False) -> List[int]:
+def chunk_sizes(cfg: Config, num_games: int, actors: int, device: str = None) -> List[int]:
     """Per-task game counts, tuned to the worker inference `device` (default cfg.device).
 
-    GPU server streaming mode: 1-game chunks so every worker always has a fresh game
-    at full search depth — no GPU starvation as games finish.  (The old chunked approach
-    created 2−3× chunks than workers with parallel_games-sized chunks, but workers within
-    a chunk processed games sequentially, so the GPU saw a declining active-game count.)
-
-    GPU non-server: chunks sized to parallel_games with 2-3× more chunks than workers
-    for load-balancing.
-
-    CPU: many small chunks so fast cores keep grabbing work.
+    Each chunk contains enough concurrent games that MCTS produces many leaves per step,
+    which the inference server coalesces into large batches.  (1-game chunks destroy
+    batching: one leaf per worker per step.)
     """
-    if streaming:
-        return [1] * num_games  # every game is its own task
     device = device or cfg.device
     if device == "cuda":
         chunk = max(1, cfg.selfplay.parallel_games)
@@ -271,7 +262,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
 
         # Streaming: 1-game chunks keep every worker fed with fresh games.
         chunk_dev = cfg.device
-        sizes = chunk_sizes(cfg, num_games, actors, chunk_dev, streaming=True)
+        sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
         gpu_label = f"gpu-server({cfg.device})" if ngpus == 1 else f"gpu-server({ngpus}×{cfg.device})"
     else:
         chunk_dev = cfg.worker_eval_device()

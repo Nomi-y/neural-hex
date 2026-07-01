@@ -161,7 +161,7 @@ def play_match_parallel(cfg: Config, cand_state, best_state, num_games: int, sim
         servers_data = [(s.req_q, s.resp_qs) for s in servers]
         counter, lock = servers[0].counter, servers[0].lock
         initializer, initargs = _init_arena_worker_remote, (cfg, servers_data, counter, lock)
-        sizes = chunk_sizes(cfg, num_games, actors, cfg.device, streaming=True)
+        sizes = chunk_sizes(cfg, num_games, actors, cfg.device)
         gpu_label = f"gpu-server({cfg.device})" if ngpus == 1 else f"gpu-server({ngpus}×{cfg.device})"
     else:
         chunk_dev = cfg.worker_eval_device()
