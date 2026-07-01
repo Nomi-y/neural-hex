@@ -70,6 +70,13 @@ fpu_reduction = 0.0
 # [REUSE_TREE] Carry the MCTS subtree under the played move into the next move's search (self-play),
 # so accumulated visits aren't thrown away → more effective search per move. Costs a little memory.
 reuse_tree = false
+# [PIPELINE_SHARDS] Self-play (CUDA inference-server path) only: split each worker's concurrent games
+# into this many groups and double-buffer their GPU evaluations — while one group's leaf batch is on
+# the GPU, the next group's tree walk runs on the CPU. Overlaps CPU search with GPU inference so the
+# server queue stays full and the GPU stays pinned (no blocking round-trip bubble). 1 = off (serial,
+# the old behaviour); 2 is a good default; 3–4 hides more latency at the cost of smaller per-request
+# batches. No effect on the CPU fan-out path, arena, or the deployed engine.
+pipeline_shards = 2
 
 [selfplay]
 # [PARALLEL_GAMES] Games batched per network forward pass (per worker) — bigger = better GPU
@@ -92,6 +99,9 @@ resign_min_ply = 18
 # [TRAIN_HOURS] Wall-clock training budget; the loop keeps running generations until this elapses.
 # Fractional allowed (0.5 = 30 min).
 hours = 48.0
+# [TRAIN_MAX_GENS] Hard cap on the number of generations, on top of the time budget (whichever is hit
+# first stops the run). 0 = unlimited (budget only). Handy for a short bounded test run.
+max_generations = 0
 # [GAMES_PER_GEN] Self-play games generated per generation = the fresh training data per cycle.
 # 32 (smoke) · 256–1024 · 8192 (huge box). Larger = better data but longer, more CPU-bound generations.
 games_per_generation = 256

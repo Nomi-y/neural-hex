@@ -180,6 +180,7 @@ class MctsConfig:
     use_virtual_connection: bool = _env_bool("USE_VC", True, "mcts.use_virtual_connection")
     fpu_reduction: float = _env_float("FPU", 0.0, "mcts.fpu_reduction")  # 0 disables FPU (legacy q=0)
     reuse_tree: bool = _env_bool("REUSE_TREE", False, "mcts.reuse_tree")  # carry MCTS subtree across self-play moves
+    pipeline_shards: int = _env_int("PIPELINE_SHARDS", 2, "mcts.pipeline_shards")  # GPU inference pipelining depth
 
 
 @dataclass
@@ -194,6 +195,7 @@ class SelfPlayConfig:
 @dataclass
 class TrainConfig:
     hours: float = _env_float("TRAIN_HOURS", 4.0, "train.hours")
+    max_generations: int = _env_int("TRAIN_MAX_GENS", 0, "train.max_generations")  # 0 = unlimited (budget only)
     num_actors: int = _env_int("NUM_ACTORS", 0, "train.num_actors")
     games_per_generation: int = _env_int("GAMES_PER_GEN", 256, "train.games_per_generation")
     replay_buffer_size: int = _env_int("REPLAY_BUFFER", 200_000, "train.replay_buffer_size")

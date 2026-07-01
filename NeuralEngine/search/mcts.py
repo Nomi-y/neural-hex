@@ -109,11 +109,46 @@ def _backup(path: List[tuple], leaf_value: float) -> None:
         node.sum_w += value
 
 
-def run_batched(roots: List[Node], evaluator, cfg, simulations: int, add_noise: bool, rng: np.random.Generator) -> None:
-    """Run `simulations` PUCT simulations on each root, batching leaf network evaluations across roots."""
+def _collect_pending(roots: List[Node], cfg) -> tuple:
+    """One PUCT descent per root: walk to a leaf, and for leaves that resolve without the
+    network (terminal / solved / virtual-connection) back the value up immediately.  Returns
+    the leaves that still need a network evaluation and their root→leaf paths."""
     num_actions = cfg.game.num_actions
     c_puct = cfg.mcts.c_puct
     fpu = cfg.mcts.fpu_reduction
+    pending_leaves: List[Node] = []
+    pending_paths: List[List[tuple]] = []
+    for root in roots:
+        if root.resolved():
+            continue
+        node = root
+        path: List[tuple] = []
+        while node.expanded and not node.resolved():
+            action = _select(node, c_puct, fpu)
+            if action not in node.children:
+                node.children[action] = Node(node.state.play(action), num_actions)
+            path.append((node, action))
+            node = node.children[action]
+        # `node` is a leaf: terminal, solved, or not-yet-expanded.
+        value = _resolve_leaf(node, cfg)
+        if value is not None:
+            _backup(path, value)
+        else:
+            pending_leaves.append(node)
+            pending_paths.append(path)
+    return pending_leaves, pending_paths
+
+
+def _apply_pending(pending_leaves: List[Node], pending_paths: List[List[tuple]],
+                   policies, values) -> None:
+    """Expand each evaluated leaf with its network priors and back its value up the tree."""
+    for i, leaf in enumerate(pending_leaves):
+        _expand(leaf, policies[i])
+        _backup(pending_paths[i], float(values[i]))
+
+
+def run_batched(roots: List[Node], evaluator, cfg, simulations: int, add_noise: bool, rng: np.random.Generator) -> None:
+    """Run `simulations` PUCT simulations on each root, batching leaf network evaluations across roots."""
     # Expand every root first (one batched evaluation), so PUCT has priors from move one.
     _ensure_expanded(roots, evaluator, cfg)
     if add_noise:
@@ -122,32 +157,75 @@ def run_batched(roots: List[Node], evaluator, cfg, simulations: int, add_noise: 
                 _add_dirichlet(root, cfg.mcts.dirichlet_alpha, cfg.mcts.dirichlet_epsilon, rng)
 
     for _ in range(simulations):
-        pending_leaves: List[Node] = []
-        pending_paths: List[List[tuple]] = []
-        for root in roots:
-            if root.resolved():
-                continue
-            node = root
-            path: List[tuple] = []
-            while node.expanded and not node.resolved():
-                action = _select(node, c_puct, fpu)
-                if action not in node.children:
-                    node.children[action] = Node(node.state.play(action), num_actions)
-                path.append((node, action))
-                node = node.children[action]
-            # `node` is a leaf: terminal, solved, or not-yet-expanded.
-            value = _resolve_leaf(node, cfg)
-            if value is not None:
-                _backup(path, value)
-            else:
-                pending_leaves.append(node)
-                pending_paths.append(path)
-
+        pending_leaves, pending_paths = _collect_pending(roots, cfg)
         if pending_leaves:
             policies, values = evaluator.evaluate([n.state for n in pending_leaves])
-            for i, leaf in enumerate(pending_leaves):
-                _expand(leaf, policies[i])
-                _backup(pending_paths[i], float(values[i]))
+            _apply_pending(pending_leaves, pending_paths, policies, values)
+
+
+def _split_list(items: List, parts: int) -> List[List]:
+    """Split `items` into `parts` near-even contiguous groups (each non-empty; fewer groups
+    than `parts` if there aren't enough items)."""
+    parts = max(1, min(parts, len(items)))
+    base, extra = divmod(len(items), parts)
+    out, i = [], 0
+    for p in range(parts):
+        n = base + (1 if p < extra else 0)
+        out.append(items[i:i + n])
+        i += n
+    return out
+
+
+def run_batched_streaming(roots: List[Node], evaluator, cfg, simulations: int, add_noise: bool,
+                          rng: np.random.Generator, shards: int) -> None:
+    """Pipelined variant of `run_batched` for the GPU inference server.
+
+    The serial loop blocks each worker on every leaf batch: build request → wait on the GPU →
+    expand/backup → repeat, so the worker's CPU tree work and the GPU forward never overlap.
+    Here the worker's games are split into `shards` groups and their evaluations are double-buffered:
+    while one group's leaves are on the GPU, the next group's tree walk runs on the CPU.  The
+    inference server's queue stays full (no CPU/GPU ping-pong bubble) and the GPU stays pinned.
+
+    Requires an evaluator exposing submit()/receive() (RemoteEvaluator, or the Evaluator shim).
+    The search is numerically identical to run_batched — each game's tree is independent, so
+    regrouping only changes which leaves share a GPU batch, not any per-leaf result.  shards<=1
+    (or a single root) falls back to the serial path."""
+    if shards <= 1 or len(roots) < 2:
+        run_batched(roots, evaluator, cfg, simulations, add_noise, rng)
+        return
+
+    _ensure_expanded(roots, evaluator, cfg)
+    if add_noise:
+        for root in roots:
+            if root.expanded:
+                _add_dirichlet(root, cfg.mcts.dirichlet_alpha, cfg.mcts.dirichlet_epsilon, rng)
+
+    groups = _split_list(roots, shards)
+    inflight: List[Optional[tuple]] = [None] * len(groups)  # (handle, leaves, paths) per group
+
+    def _submit(gi: int) -> None:
+        leaves, paths = _collect_pending(groups[gi], cfg)
+        handle = evaluator.submit([n.state for n in leaves]) if leaves else None
+        inflight[gi] = (handle, leaves, paths)
+
+    def _complete(gi: int) -> None:
+        handle, leaves, paths = inflight[gi]
+        if leaves:
+            policies, values = evaluator.receive(handle)
+            _apply_pending(leaves, paths, policies, values)
+        inflight[gi] = None
+
+    # Prime one simulation for every group, then keep exactly one batch per group in flight:
+    # complete a group's outstanding batch and immediately submit its next — so while we process
+    # group i on the CPU, groups i+1… stay queued on the GPU.
+    for gi in range(len(groups)):
+        _submit(gi)
+    for _ in range(simulations - 1):
+        for gi in range(len(groups)):
+            _complete(gi)
+            _submit(gi)
+    for gi in range(len(groups)):
+        _complete(gi)
 
 
 def _ensure_expanded(roots: List[Node], evaluator, cfg) -> None:

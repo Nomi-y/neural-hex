@@ -67,7 +67,7 @@ def _log_gpu_device() -> None:
     for i in range(torch.cuda.device_count()):
         p = torch.cuda.get_device_properties(i)
         total_gb = p.total_memory / (1024 ** 3)
-        log(f"  cuda:{i}  {p.name}  {total_gb:.1f}GB  compute {p.major}.{p.minor}")
+        log(f"[train]   cuda:{i}  {p.name}  {total_gb:.1f}GB  compute {p.major}.{p.minor}")
 
 
 def _gpu_hardware_present() -> bool:
@@ -107,15 +107,15 @@ def _assert_cuda_usable() -> None:
             gpu = f"{name} (sm_{cc[0]}{cc[1]})"
         except Exception:
             archs, gpu = "?", "?"
-        log("=" * 60)
-        log("FATAL: CUDA is available but this torch wheel has no kernels for the GPU's architecture.")
-        log(f"  GPU: {gpu}   wheel supports: {archs}")
-        log(f"  ({type(exc).__name__}: {exc})")
-        log("  Rebuild the image with a CUDA wheel that covers this GPU:")
-        log("    • Blackwell (RTX 5090/B200, sm_120) needs cu128 — ./build_container.sh --cuda --cuda-wheel cu128")
-        log("      (or set the CI 'cuda_wheel' input to cu128).")
-        log("  To intentionally train on CPU instead, set  ALLOW_CPU=1  with DEVICE=cpu.")
-        log("=" * 60)
+        log("[train] " + "=" * 60)
+        log("[train] FATAL: CUDA is available but this torch wheel has no kernels for the GPU's architecture.")
+        log(f"[train]   GPU: {gpu}   wheel supports: {archs}")
+        log(f"[train]   ({type(exc).__name__}: {exc})")
+        log("[train]   Rebuild the image with a CUDA wheel that covers this GPU:")
+        log("[train]     • Blackwell (RTX 5090/B200, sm_120) needs cu128 — ./build_container.sh --cuda --cuda-wheel cu128")
+        log("[train]       (or set the CI 'cuda_wheel' input to cu128).")
+        log("[train]   To intentionally train on CPU instead, set  ALLOW_CPU=1  with DEVICE=cpu.")
+        log("[train] " + "=" * 60)
         raise SystemExit(1)
 
 
@@ -135,15 +135,15 @@ def _assert_device_or_die(device: str) -> None:
         if not _gpu_hardware_present():
             return
     built_for = getattr(torch.version, "cuda", None) or "cpu-only"
-    log("=" * 60)
-    log("FATAL: an NVIDIA GPU is present but torch cannot use it — refusing to train on CPU.")
-    log(f"  torch {torch.__version__} was built for CUDA {built_for}; this host's driver is older.")
-    log("  The GPU you are paying for would sit idle. Fix the wheel/driver mismatch:")
-    log("    • Check the host driver's CUDA: run  nvidia-smi  (top-right 'CUDA Version').")
-    log("    • Rebuild the image with a wheel <= that, e.g.  ./build_container.sh --cuda --cuda-wheel cu121")
-    log("    • Blackwell (RTX 5090/B200) needs cu128 AND a driver supporting CUDA 12.8.")
-    log("  To intentionally train on CPU anyway, set  ALLOW_CPU=1.")
-    log("=" * 60)
+    log("[train] " + "=" * 60)
+    log("[train] FATAL: an NVIDIA GPU is present but torch cannot use it — refusing to train on CPU.")
+    log(f"[train]   torch {torch.__version__} was built for CUDA {built_for}; this host's driver is older.")
+    log("[train]   The GPU you are paying for would sit idle. Fix the wheel/driver mismatch:")
+    log("[train]     • Check the host driver's CUDA: run  nvidia-smi  (top-right 'CUDA Version').")
+    log("[train]     • Rebuild the image with a wheel <= that, e.g.  ./build_container.sh --cuda --cuda-wheel cu121")
+    log("[train]     • Blackwell (RTX 5090/B200) needs cu128 AND a driver supporting CUDA 12.8.")
+    log("[train]   To intentionally train on CPU anyway, set  ALLOW_CPU=1.")
+    log("[train] " + "=" * 60)
     raise SystemExit(1)
 
 
@@ -415,42 +415,42 @@ def main() -> None:
 
     # Log the full config at startup so the user can see what's active
     budget_s = cfg.train.hours * 3600
-    log("=" * 60)
-    log(f"NeuralEngine training starting")
-    log(f"  device    = {device}")
+    log("[train] " + "=" * 60)
+    log(f"[train] NeuralEngine training starting")
+    log(f"[train]   device    = {device}")
     if device == "cuda":
         _log_gpu_device()
-    log(f"  board     = {cfg.game.board_size}×{cfg.game.board_size}  swap={cfg.game.swap_rule}")
-    log(f"  net       = {cfg.net.channels} ch × {cfg.net.blocks} blocks  value_hidden={cfg.net.value_hidden}  se={cfg.net.use_se}")
-    log(f"  mcts      = {cfg.mcts.simulations} sims  cpuct={cfg.mcts.c_puct}  "
+    log(f"[train]   board     = {cfg.game.board_size}×{cfg.game.board_size}  swap={cfg.game.swap_rule}")
+    log(f"[train]   net       = {cfg.net.channels} ch × {cfg.net.blocks} blocks  value_hidden={cfg.net.value_hidden}  se={cfg.net.use_se}")
+    log(f"[train]   mcts      = {cfg.mcts.simulations} sims  cpuct={cfg.mcts.c_puct}  "
         f"dirichlet=({cfg.mcts.dirichlet_alpha},{cfg.mcts.dirichlet_epsilon})  "
         f"solver≤{cfg.mcts.solver_empty_threshold}  vc={cfg.mcts.use_virtual_connection}")
-    log(f"  selfplay  = {cfg.selfplay.parallel_games} parallel  temp={cfg.selfplay.temperature}({cfg.selfplay.temperature_moves} plies)  "
-        f"no-resign")
-    log(f"  train     = {cfg.train.hours}h budget  {cfg.train.games_per_generation} games/gen  "
+    log(f"[train]   selfplay  = {cfg.selfplay.parallel_games} parallel  temp={cfg.selfplay.temperature}({cfg.selfplay.temperature_moves} plies)  "
+        f"pipeline={cfg.mcts.pipeline_shards}  no-resign")
+    log(f"[train]   train     = {cfg.train.hours}h budget  {cfg.train.games_per_generation} games/gen  "
         f"{cfg.train.train_steps_per_generation} steps  batch={cfg.train.batch_size}  "
         f"buffer={cfg.train.replay_buffer_size}")
-    log(f"  optimizer = lr={cfg.train.learning_rate}  wd={cfg.train.weight_decay}  "
+    log(f"[train]   optimizer = lr={cfg.train.learning_rate}  wd={cfg.train.weight_decay}  "
         f"clip={cfg.train.grad_clip}  schedule={cfg.train.lr_schedule}  "
         f"lr_min={cfg.train.lr_min}  warmup={cfg.train.lr_warmup_steps}")
-    log(f"  arena     = {cfg.train.arena_games} games @ {cfg.train.arena_simulations} sims  "
+    log(f"[train]   arena     = {cfg.train.arena_games} games @ {cfg.train.arena_simulations} sims  "
         f"threshold={cfg.train.arena_win_rate:.0%}")
     _selfplay_eval = f"gpu-server({device})" if cfg.use_inference_server() else cfg.worker_eval_device()
-    log(f"  actors    = {cfg.resolve_actors()} (of {available_cpus()} usable cpus)  "
+    log(f"[train]   actors    = {cfg.resolve_actors()} (of {available_cpus()} usable cpus)  "
         f"seed={cfg.train.seed}  selfplay_eval={_selfplay_eval}")
-    log(f"  checkpoint_dir = {cfg.train.checkpoint_dir}")
-    log(f"  save_every_ckpt = {cfg.train.save_every_checkpoint}")
-    log(f"  log_dir   = {cfg.train.log_dir or '(stdout only)'}")
-    log(f"  amp       = {'on' if device == 'cuda' else 'off'}  compile={'on' if device == 'cuda' else 'off'}")
+    log(f"[train]   checkpoint_dir = {cfg.train.checkpoint_dir}")
+    log(f"[train]   save_every_ckpt = {cfg.train.save_every_checkpoint}")
+    log(f"[train]   log_dir   = {cfg.train.log_dir or '(stdout only)'}")
+    log(f"[train]   amp       = {'on' if device == 'cuda' else 'off'}  compile={'on' if device == 'cuda' else 'off'}")
     if device == "cuda":
         mem = _gpu_memory_str()
         if mem:
-            log(f"  {mem}")
-    log("=" * 60)
+            log(f"[train]   {mem}")
+    log("[train] " + "=" * 60)
 
     net = build_net(cfg).to(device)
     total_params = sum(p.numel() for p in net.parameters())
-    log(f"  model parameters: {total_params:,}")
+    log(f"[train]   model parameters: {total_params:,}")
 
     # torch.compile on CUDA: JIT-compiles the network into fused kernels.
     # Uses "reduce-overhead" mode for training (amortizes compilation overhead
@@ -472,11 +472,11 @@ def main() -> None:
                                 device=device)
             _ = net(dummy)
             compiled_ok = True
-            log(f"  torch.compile: enabled (reduce-overhead) — warmup OK")
+            log(f"[train]   torch.compile: enabled (reduce-overhead) — warmup OK")
         except Exception as e:
             net = build_net(cfg).to(device)  # fresh uncompiled net
-            log(f"  torch.compile: skipped — warmup failed ({e})")
-            log(f"  (install gcc in the container image to enable torch.compile)")
+            log(f"[train]   torch.compile: skipped — warmup failed ({e})")
+            log(f"[train]   (install gcc in the container image to enable torch.compile)")
 
     # Bare (uncompiled) view of the model: its state_dict has no '_orig_mod.' prefix,
     # so checkpoints and weights shipped to workers load into plain nets.
@@ -491,7 +491,7 @@ def main() -> None:
     if device == "cuda":
         mem = _gpu_memory_str()
         if mem:
-            log(f"  after model+optim: {mem}")
+            log(f"[train]   after model+optim: {mem}")
 
     latest_path = os.path.join(cfg.train.checkpoint_dir, LATEST)
     best_path = os.path.join(cfg.train.checkpoint_dir, BEST)
@@ -523,8 +523,9 @@ def main() -> None:
 
     start = time.time()
     gen_times: list[float] = []
+    max_gens = cfg.train.max_generations  # 0 = unlimited; a cap lets a test run a fixed few generations
     try:
-        while time.time() - start < budget_s:
+        while time.time() - start < budget_s and (max_gens <= 0 or generation < max_gens):
             generation += 1
             set_gen(generation)
             os.environ["TRAIN_GENERATION"] = str(generation)  # for infer server _ts()
@@ -537,7 +538,7 @@ def main() -> None:
             samples = selfplay.generate(
                 cfg, best_state, cfg.train.games_per_generation,
                 base_seed=cfg.train.seed + generation * 1000,
-                progress=_throttled("self-play", cfg.train.games_per_generation),
+                progress=_throttled("selfplay", cfg.train.games_per_generation),
             )
             buffer.extend(samples)
             sp_dt = time.time() - sp_start

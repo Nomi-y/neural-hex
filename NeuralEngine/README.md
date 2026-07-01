@@ -43,6 +43,14 @@ When a game finishes, a new seed is atomically claimed from a shared pool — th
 stays fed with a constant-size batch of leaves for the entire generation.  No
 decline as games complete.
 
+**Pipelining** (`pipeline_shards`, default 2): each worker splits its concurrent games
+into that many groups and double-buffers their GPU evaluations — while one group's leaf
+batch is on the GPU, the next group's tree walk runs on the CPU.  This overlaps CPU search
+with GPU inference (`RemoteEvaluator.submit`/`receive` let a worker hold several batches in
+flight) so the inference server's queue stays full and the GPU stays pinned instead of
+ping-ponging with each worker's blocking round-trip.  It's numerically identical to the
+serial search — regrouping only changes which leaves share a batch.  `1` = off.
+
 **Leaves vs. samples**: a *leaf* is one network evaluation during search
 (plane encoding → forward pass → policy + value).  The `[infer]` heartbeat logs
 leaves/second.  A *sample* is a completed training datum: `(board position,
@@ -282,6 +290,7 @@ Knobs (all env, so they work with baked images):
 |-----|---------|---------|
 | `INFERENCE_SERVER` | on for CUDA | `0`/`1` — GPU inference server vs per-worker CPU eval. |
 | `INFERENCE_MAX_BATCH` | 2048 | Max leaves the server coalesces into one forward (bounds VRAM). |
+| `PIPELINE_SHARDS` | 2 | Per-worker double-buffering of GPU eval (overlap CPU search + GPU inference). `1` = serial. |
 | `NUM_ACTORS` | cores − 2 | Self-play / arena worker processes. |
 | `NUM_GPUS` | auto | Number of GPUs to use (auto = `torch.cuda.device_count()`). |
 

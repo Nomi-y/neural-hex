@@ -7,9 +7,10 @@ It exercises: the rules engine, bridges + endgame solver, encoding/canonicalisat
 batched MCTS, self-play sample generation, a few optimiser steps, and an arena match — on CPU.
 
 If a CUDA GPU is present it ALSO runs the GPU-only paths that CPU smoke can't reach (device-property
-logging, the arch/kernel guard, a real GPU forward, and self-play + arena through the GPU inference
-server) — run it on a CUDA box before committing. With no GPU (e.g. the Docker build host) the GPU
-section is skipped, so it stays a valid build-time guard.
+logging, the arch/kernel guard, a real GPU forward, self-play + arena through the GPU inference
+server, and a bounded few-generation run of the real training entrypoint that exercises the logging
+format and the pipelined self-play) — run it on a CUDA box before committing. With no GPU (e.g. the
+Docker build host) the GPU section is skipped, so it stays a valid build-time guard.
 """
 
 import os
@@ -112,6 +113,7 @@ def main() -> None:
     print(f"  solver on a near-terminal position returned value={val} action={action}")
 
     cuda_checks()
+    cuda_training_loops()
     print("SMOKE TEST PASSED")
 
 
@@ -163,6 +165,72 @@ def cuda_checks() -> None:
     assert 0.0 <= wr <= 1.0, "cuda arena via the inference server returned an invalid win rate"
     print(f"  cuda inference-server: {len(par)} self-play samples, arena {wr:.0%}")
     print("  CUDA CHECKS PASSED")
+
+
+# Every training log line must look like `[HH:MM:SS +H:MM:SS] [gen N] [tag] …`, with the [gen N]
+# segment present once inside a generation and omitted for startup/shutdown lines.
+_LOG_LINE = __import__("re").compile(
+    r"^\[\d{2}:\d{2}:\d{2} \+\d+:\d{2}:\d{2}\]( \[gen \d+\])? \[[\w-]+\] ")
+
+
+def cuda_training_loops(generations: int = 2) -> None:
+    """Run the REAL training entrypoint (`python -m train.train`) for a bounded few generations on
+    the GPU — the closest thing to a live run — so the logging changes and the self-play pipelining
+    are exercised end-to-end, not just their units.  Skips cleanly without CUDA (build-guard safe).
+
+    Asserts: the run completes the requested generations; the self-play fan-out advertises the
+    pipeline; and EVERY emitted log line carries the `[time +elapsed] [gen] [tag]` prefix."""
+    if not torch.cuda.is_available():
+        print("  cuda training loop: no GPU — skipped")
+        return
+
+    import subprocess
+    import sys
+    import tempfile
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    with tempfile.TemporaryDirectory(prefix="hex_smoke_") as tmp:
+        # Tiny, fast, CUDA — env overrides win over hyperparams.toml (read at config import in the
+        # child). Short logging intervals so [hw]/[infer]/[selfplay] progress lines actually appear
+        # in a seconds-long run and get format-checked. PIPELINE_SHARDS>1 exercises the optimization.
+        env = {
+            **os.environ,
+            "DEVICE": "cuda",
+            "BOARD_SIZE": "5", "NET_CHANNELS": "16", "NET_BLOCKS": "2",
+            "NET_SE": "false", "NET_VALUE_HIDDEN": "32",
+            "MCTS_SIMS": "12", "PARALLEL_GAMES": "8", "PIPELINE_SHARDS": "2",
+            "NUM_ACTORS": "2", "GAMES_PER_GEN": "8", "BATCH_SIZE": "32",
+            "TRAIN_STEPS": "5", "REPLAY_BUFFER": "5000",
+            "ARENA_GAMES": "2", "ARENA_SIMS": "8",
+            "TRAIN_HOURS": "1", "TRAIN_MAX_GENS": str(generations), "SEED": "0",
+            "CHECKPOINT_DIR": os.path.join(tmp, "ckpt"), "LOG_DIR": os.path.join(tmp, "logs"),
+            "HW_LOG_INTERVAL": "1", "INFERENCE_LOG_EVERY": "1",
+            "SELFPLAY_PROGRESS_INTERVAL": "1", "TRAIN_LOG_INTERVAL": "1",
+        }
+        print(f"  cuda training loop: running {generations} generations via `python -m train.train`…")
+        proc = subprocess.run([sys.executable, "-m", "train.train"], cwd=here, env=env,
+                              capture_output=True, text=True, timeout=600)
+
+    out = proc.stdout
+    if proc.returncode != 0:
+        print(out)
+        print(proc.stderr[-2000:])
+        raise AssertionError(f"training run exited {proc.returncode}")
+
+    log_lines = [ln for ln in out.splitlines() if ln.startswith("[")]
+    bad = [ln for ln in log_lines if not _LOG_LINE.match(ln)]
+    assert not bad, f"{len(bad)} log line(s) missing the [time +elapsed] [gen] [tag] prefix, e.g.:\n    " \
+                    + "\n    ".join(bad[:5])
+
+    done = [ln for ln in log_lines if "[summary] DONE" in ln]
+    assert len(done) >= generations, f"expected {generations} generation summaries, got {len(done)}"
+    assert any("pipeline" in ln for ln in log_lines), "self-play fan-out never reported the pipeline"
+
+    # Progress dedupe: at most one [selfplay] N/total progress line per second (interval=1s here),
+    # not one per worker — a decent proxy for the fan-out no longer being actors× too chatty.
+    print(f"  ✓ cuda training loop: {len(done)} generations, {len(log_lines)} tagged log lines, "
+          f"pipelined self-play OK")
+    print("  CUDA TRAINING LOOP PASSED")
 
 
 if __name__ == "__main__":

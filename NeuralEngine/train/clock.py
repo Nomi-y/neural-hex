@@ -12,9 +12,32 @@ boundary.
 
 from __future__ import annotations
 
+import os
 import time
 
-_START = time.time()
+
+def _env_start() -> float:
+    """Training start epoch shared with spawned children via TRAIN_START_EPOCH (set by train.py).
+    Lets a worker/inference-server process report the SAME `+offset` as the parent instead of one
+    measured from its own (later) start.  Falls back to now for a standalone import."""
+    raw = os.environ.get("TRAIN_START_EPOCH")
+    try:
+        return float(raw) if raw else time.time()
+    except (TypeError, ValueError):
+        return time.time()
+
+
+def _env_gen() -> int | None:
+    """Current generation shared with spawned children via TRAIN_GENERATION (set by train.py), so
+    worker log lines carry `[gen N]` too.  None outside a generation / when unset."""
+    raw = os.environ.get("TRAIN_GENERATION")
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+_START = _env_start()
 
 
 def set_start(t: float | None = None) -> None:
@@ -34,7 +57,7 @@ def offset_str(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{sec:02d}"
 
 
-_GEN: int | None = None  # current generation, set by main loop; None = outside gen context
+_GEN: int | None = _env_gen()  # current generation; parent sets it via set_gen, children inherit via env
 
 
 def set_gen(gen: int | None) -> None:
@@ -45,8 +68,9 @@ def set_gen(gen: int | None) -> None:
 def log(msg: str, gen: int | None = None) -> None:
     """Timestamped log line: [HH:MM:SS +offset] [gen N] msg.
 
-    If `gen` is not passed, falls back to the module-level `_GEN` (set by the main loop).
-    When neither is set, the [gen N] segment is omitted so startup/shutdown lines stay compact.
+    If `gen` is not passed, falls back to the module-level `_GEN` (set by the main loop, or inherited
+    from TRAIN_GENERATION in a spawned worker).  When neither is set, the [gen N] segment is omitted
+    so startup/shutdown lines stay compact.
     """
     now = time.strftime("%H:%M:%S")
     gen = gen if gen is not None else _GEN

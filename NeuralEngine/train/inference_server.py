@@ -66,8 +66,14 @@ def _ts() -> str:
 class RemoteEvaluator:
     """Worker-side stand-in for net.evaluator.Evaluator, bound to one net_id on the server.
 
-    Synchronous: each worker has at most one outstanding request (MCTS calls evaluate and blocks),
-    so a single per-worker response queue with request-id matching is all the routing we need."""
+    submit()/receive() split the request from the wait so a worker can keep several leaf batches
+    in flight at once — pipelined MCTS (mcts.run_batched_streaming) submits the next group's leaves
+    while the previous group's forward is still running on the GPU, overlapping CPU search with GPU
+    inference.  evaluate() is the synchronous submit-then-receive used by the serial path.
+
+    Replies land on the one per-worker response queue in request order, but receive() buffers any
+    result that isn't the one being awaited, so out-of-order arrivals (more than one request
+    outstanding) are matched by request id rather than assumed away."""
 
     def __init__(self, net_id: int, worker_idx: int, req_q, resp_q) -> None:
         self.net_id = net_id
@@ -75,22 +81,36 @@ class RemoteEvaluator:
         self.req_q = req_q
         self.resp_q = resp_q
         self._rid = 0
+        self._states: dict = {}    # rid -> states, kept until receive() maps its policy back
+        self._buffered: dict = {}  # rid -> (probs, values) that arrived before their receive()
 
-    def evaluate(self, states: List[HexState]) -> Tuple[np.ndarray, np.ndarray]:
+    def submit(self, states: List[HexState]) -> int:
+        """Queue a leaf batch on the GPU server and return its request id WITHOUT blocking."""
         planes = encode_batch(states)
         masks = np.stack([canonical_legal_mask(s) for s in states])
         self._rid += 1
         rid = self._rid
         self.req_q.put((self.net_id, self.worker_idx, rid, planes, masks))
-        while True:
-            try:
-                r_rid, probs, values = self.resp_q.get(timeout=_RESULT_TIMEOUT_S)
-            except queue.Empty:
-                raise RuntimeError(
-                    f"inference server returned no result in {_RESULT_TIMEOUT_S:.0f}s "
-                    f"(worker {self.worker_idx}) — the GPU server likely died")
-            if r_rid == rid:
-                break  # stale id can't normally happen (synchronous), but never trust a mismatch
+        self._states[rid] = states
+        return rid
+
+    def receive(self, rid: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Block for the result of request `rid`, buffering any other results that arrive first."""
+        states = self._states.pop(rid)
+        if rid in self._buffered:
+            probs, values = self._buffered.pop(rid)
+        else:
+            while True:
+                try:
+                    r_rid, r_probs, r_values = self.resp_q.get(timeout=_RESULT_TIMEOUT_S)
+                except queue.Empty:
+                    raise RuntimeError(
+                        f"inference server returned no result in {_RESULT_TIMEOUT_S:.0f}s "
+                        f"(worker {self.worker_idx}) — the GPU server likely died")
+                if r_rid == rid:
+                    probs, values = r_probs, r_values
+                    break
+                self._buffered[r_rid] = (r_probs, r_values)
 
         # Map canonical probs -> real-action order: transpose for BLUE, identity for RED.
         perm = action_transpose(states[0].size)
@@ -98,6 +118,9 @@ class RemoteEvaluator:
         for i, state in enumerate(states):
             policies[i] = probs[i] if state.to_move == RED else probs[i][perm]
         return policies, values
+
+    def evaluate(self, states: List[HexState]) -> Tuple[np.ndarray, np.ndarray]:
+        return self.receive(self.submit(states))
 
 
 def _server_loop(cfg, np_states, device, req_q, resp_qs, stop_evt, max_batch) -> None:

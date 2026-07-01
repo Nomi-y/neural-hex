@@ -194,28 +194,32 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
     all workers.  Keeps the inference server fed with a constant-size batch.
 
     Reads shared counters from _WORKER[\"stream\"] (set by the initializer)."""
-    game_counter, seed_counter, lock, total_games, max_conc = _WORKER["stream"]
+    game_counter, seed_counter, lock, total_games, max_conc, progress_log = _WORKER["stream"]
     cfg = _WORKER["cfg"]
     evaluator = _WORKER["evaluator"]
     num_actions = cfg.game.num_actions
     reuse = cfg.mcts.reuse_tree
     sims = cfg.mcts.simulations
+    shards = max(1, cfg.mcts.pipeline_shards)
     board = cfg.game.board_size
     swap = cfg.game.swap_rule
     samples: List[Sample] = []
     completed = 0  # by this worker
-    last_progress_log = time.time()
     progress_every = float(os.environ.get("SELFPLAY_PROGRESS_INTERVAL", "30"))
 
     def _maybe_log_progress() -> None:
-        nonlocal last_progress_log
+        # All workers share one last-log timestamp, so the whole generation emits at most one
+        # progress line per interval (not one per worker — that was ~actors× too chatty).
         now = time.time()
-        if now - last_progress_log >= progress_every:
+        should_log = False
+        with lock:
+            gd = game_counter.value
+            if now - progress_log.value >= progress_every:
+                progress_log.value = now
+                should_log = True
+        if should_log:
             from train.clock import log
-            with lock:
-                gd = game_counter.value
             log(f"[selfplay] {gd}/{total_games} ({gd / max(1, total_games):.0%})")
-            last_progress_log = now
 
     # Active slots
     slots: list = [None] * max_conc
@@ -244,7 +248,7 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
         roots = [(g.root if reuse and g.root is not None else mcts.make_root(g.state))
                  for g in games_list]
         rng = np.random.default_rng()  # don't care about determinism across workers
-        mcts.run_batched(roots, evaluator, cfg, sims, True, rng)
+        mcts.run_batched_streaming(roots, evaluator, cfg, sims, True, rng, shards)
 
         for idx, g, root in zip(indices, games_list, roots):
             pi_real = mcts.policy_distribution(root, num_actions)
@@ -352,13 +356,18 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
     results: List[List[Sample]] = []
     done = 0
 
+    # Streaming workers report their own incremental progress (deduped across workers); the parent
+    # only sees them return at the very end, so its callback would just add a redundant, overshooting
+    # line there. Keep the parent progress for the chunked path, where it IS the incremental signal.
+    emit_progress = None if use_server else progress
+
     def _on(item) -> None:
         nonlocal done
         n, samples = item
         results.append(samples)
         done += n
-        if progress:
-            progress(done, num_games)
+        if emit_progress:
+            emit_progress(done, num_games)
 
     servers: list = []
     if use_server:
@@ -385,16 +394,19 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         # leaves — no decline as games complete.
         game_counter = ctx.Value("i", 0)
         seed_counter = ctx.Value("i", 0)  # game counter, not RNG seed
+        progress_log = ctx.Value("d", 0.0)  # shared last-progress-log time → one line/interval, not per worker
         stream_lock = ctx.Lock()
         max_conc = max(1, cfg.selfplay.parallel_games // max(1, actors))
-        stream_args = (game_counter, seed_counter, stream_lock, num_games, max_conc)
+        stream_args = (game_counter, seed_counter, stream_lock, num_games, max_conc, progress_log)
         tasks = [None] * actors  # dummy — real work is driven by shared counters
         fn = _play_worker_stream
         initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock, stream_args)
         gpu_label = (f"gpu-server({cfg.device})" if ngpus == 1
                      else f"gpu-server({ngpus}×{cfg.device})")
+        shards = max(1, cfg.mcts.pipeline_shards)
         log(f"[selfplay] fanning {num_games} games across {actors} actors "
-            f"(eval on {gpu_label}, streaming {max_conc} concurrent per worker)")
+            f"(eval on {gpu_label}, streaming {max_conc} concurrent per worker"
+            + (f", {shards}-way pipeline" if shards > 1 else "") + ")")
     else:
         chunk_dev = cfg.worker_eval_device()
         sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)

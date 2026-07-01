@@ -46,3 +46,12 @@ class Evaluator:
         for i, state in enumerate(states):
             policies[i] = probs[i] if state.to_move == RED else probs[i][perm]
         return policies, values_np
+
+    # Synchronous stand-in for the async RemoteEvaluator API, so mcts.run_batched_streaming can
+    # drive any evaluator uniformly: submit() computes immediately and hands back the result as
+    # the handle; receive() just returns it.  (No CPU/GPU overlap here — that's the server's job.)
+    def submit(self, states: List[HexState]):
+        return self.evaluate(states)
+
+    def receive(self, handle):
+        return handle
