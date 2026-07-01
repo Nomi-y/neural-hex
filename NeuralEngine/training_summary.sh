@@ -7,7 +7,7 @@
 #   ./training_summary.sh train.log -o report.md             # custom output
 #   ./training_summary.sh train.log -w                       # watch: refresh every REFRESH s
 #
-# Reads [gen N] DONE … lines (generation table), [hw] … lines (hardware
+# Reads [gen N[summary] DONE … lines (generation table), [hw] … lines (hardware
 # utilisation timeline), and [infer] … lines (inference-server throughput).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -41,7 +41,7 @@ read_logs() {
 # ── DONE lines → TSV: gen \t ploss \t vloss \t arena \t result \t gen_time \t elapsed \t samples
 parse_done() {
   awk '
-    /\] DONE / {
+    /\[summary] DONE / {
       delete val; gen=""; res=""
       for (i = 1; i <= NF; i++) {
         if ($i == "[gen") { g = $(i+1); gsub(/]/, "", g); gen = g }
@@ -94,7 +94,7 @@ generate() {
   raw="$(read_logs 2>&1)" || { echo "Could not read logs ($src_desc)." >&2; return 1; }
 
   local done_lines hw_lines infer_lines done_tsv hw_tsv infer_tsv
-  done_lines="$(printf '%s\n' "$raw"  | grep -F '] DONE '  || true)"
+  done_lines="$(printf '%s\n' "$raw"  | grep -F '[summary] DONE '  || true)"
   hw_lines="$(printf   '%s\n' "$raw"  | grep -F '[hw] '     || true)"
   infer_lines="$(printf '%s\n' "$raw" | grep -F '[infer] '  | grep 'leaves/s' || true)"
   done_tsv="$(printf  '%s\n' "$done_lines"  | parse_done)"

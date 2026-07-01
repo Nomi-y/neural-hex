@@ -378,7 +378,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock, stream_args)
         gpu_label = (f"gpu-server({cfg.device})" if ngpus == 1
                      else f"gpu-server({ngpus}×{cfg.device})")
-        log(f"[self-play] fanning {num_games} games across {actors} actors "
+        log(f"[selfplay] fanning {num_games} games across {actors} actors "
             f"(eval on {gpu_label}, streaming max_concurrent={cfg.selfplay.parallel_games})")
     else:
         chunk_dev = cfg.worker_eval_device()
@@ -387,7 +387,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         fn = _play_chunk
         initializer, initargs = _init_worker, (cfg, np_state, chunk_dev)
         gpu_label = chunk_dev
-        log(f"[self-play] fanning {num_games} games across {actors} actors (eval on {gpu_label}), "
+        log(f"[selfplay] fanning {num_games} games across {actors} actors (eval on {gpu_label}), "
             f"{len(sizes)} chunks (avg {num_games // max(1, len(sizes))} games/chunk, "
             f"max parallel per chunk={min(cfg.selfplay.parallel_games, max(sizes) if sizes else 0)})")
 
@@ -399,7 +399,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         for srv in servers:
             srv.stop()
     if not ok:
-        log(f"[self-play] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s with no "
+        log(f"[selfplay] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s with no "
             f"result — terminated pool, continuing with {done}/{num_games} games "
             f"({sum(len(r) for r in results)} samples).")
     return [s for r in results for s in r]

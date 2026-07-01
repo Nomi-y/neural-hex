@@ -39,12 +39,14 @@ _RESULT_TIMEOUT_S = float(os.environ.get("INFERENCE_RESULT_TIMEOUT", "300"))
 
 
 def _ts() -> str:
-    """Timestamp prefix matching train.clock.log() format: [HH:MM:SS +offset].
+    """Timestamp prefix matching train.clock.log() format: [HH:MM:SS +offset] [gen N].
 
-    Reads TRAIN_START_EPOCH from the environment (set by train.py) so the offset
-    is consistent with all other log lines. Falls back to bare [HH:MM:SS] when
-    the env var is unavailable (e.g. running standalone tests)."""
+    Reads TRAIN_START_EPOCH and TRAIN_GENERATION from the environment (set by
+    train.py) so the offset and generation are consistent with all other log
+    lines.  Falls back to bare [HH:MM:SS] when env vars are unavailable
+    (standalone tests)."""
     now = time.strftime("%H:%M:%S")
+    prefix = f"[{now}]"
     start_raw = os.environ.get("TRAIN_START_EPOCH")
     if start_raw:
         try:
@@ -52,10 +54,13 @@ def _ts() -> str:
             elapsed = int(max(0, time.time() - start))
             h, rem = divmod(elapsed, 3600)
             m, s = divmod(rem, 60)
-            return f"[{now} +{h}:{m:02d}:{s:02d}]"
+            prefix = f"[{now} +{h}:{m:02d}:{s:02d}]"
         except (ValueError, TypeError):
             pass
-    return f"[{now}]"
+    gen_raw = os.environ.get("TRAIN_GENERATION")
+    if gen_raw:
+        prefix += f" [gen {gen_raw}]"
+    return prefix
 
 
 class RemoteEvaluator:

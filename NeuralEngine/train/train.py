@@ -185,7 +185,7 @@ def _throttled(label: str, total: int, every_seconds: float = 10.0):
             return
         state["last"] = now
         rate = done / max(1e-9, now - phase_start)
-        log(f"    {label}: {done}/{total} ({done / total:.0%}, {rate:.1f}/s)")
+        log(f"[{label}] {done}/{total} ({done / total:.0%}, {rate:.1f}/s)")
 
     return cb
 
@@ -302,8 +302,12 @@ def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.rand
     policy_losses, value_losses, total_losses = [], [], []
     steps = cfg.train.train_steps_per_generation
     grad_clip = cfg.train.grad_clip
-    report_every = max(1, steps // 4)
     step_start = time.time()
+    # Timer-based progress: log every TRAIN_LOG_INTERVAL seconds (default 120),
+    # plus always at the final step.  Step-count-based intervals are misleading
+    # when training is fast (1000 steps in 3 min); timer is consistent.
+    log_every = float(os.environ.get("TRAIN_LOG_INTERVAL", "120"))
+    last_log = step_start
 
     lr_step_fn = _build_lr_scheduler(optimizer, cfg, generation)
 
@@ -345,18 +349,19 @@ def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.rand
         value_losses.append(float(value_loss.item()))
         total_losses.append(float(loss.item()))
 
-        if (step + 1) % report_every == 0 or (step + 1) == steps:
-            rate = (step + 1) / max(1e-9, time.time() - step_start)
-            recent = report_every if (step + 1) >= report_every else (step + 1)
-            avg_ploss = float(np.mean(policy_losses[-recent:]))
-            avg_vloss = float(np.mean(value_losses[-recent:]))
+        now = time.time()
+        if now - last_log >= log_every or (step + 1) == steps:
+            rate = (step + 1) / max(1e-9, now - step_start)
+            avg_ploss = float(np.mean(policy_losses[-min(250, step + 1):]))
+            avg_vloss = float(np.mean(value_losses[-min(250, step + 1):]))
             lr = _get_lr(optimizer)
-            log(f"    train: step {step + 1}/{steps} ({rate:.0f}/s) "
+            log(f"[train] step {step + 1}/{steps} ({rate:.0f}/s) "
                 f"lr={lr:.2e} ploss={avg_ploss:.3f} vloss={avg_vloss:.3f}")
+            last_log = now
 
     # Weight stats computed once at the end, not per logging interval.
     ws = _weight_stats(net)
-    log(f"    train: |w|={ws.get('w_mean', 0):.4f}±{ws.get('w_std', 0):.4f} "
+    log(f"[train] |w|={ws.get('w_mean', 0):.4f}±{ws.get('w_std', 0):.4f} "
         f"|g|={ws.get('g_norm', 0):.2f}")
 
     return float(np.mean(policy_losses)), float(np.mean(value_losses)), float(np.mean(total_losses))
@@ -520,10 +525,11 @@ def main() -> None:
         while time.time() - start < budget_s:
             generation += 1
             set_gen(generation)
+            os.environ["TRAIN_GENERATION"] = str(generation)  # for infer server _ts()
             gen_start = time.time()
 
             # ── Self-play ────────────────────────────────────────────────
-            log(f"self-play: {cfg.train.games_per_generation} games "
+            log(f"[selfplay] {cfg.train.games_per_generation} games "
                 f"@ {cfg.mcts.simulations} sims on {cfg.resolve_actors()} actor(s)…")
             sp_start = time.time()
             samples = selfplay.generate(
@@ -534,17 +540,17 @@ def main() -> None:
             buffer.extend(samples)
             sp_dt = time.time() - sp_start
             mem = _gpu_memory_str()
-            log(f"self-play done in {offset_str(sp_dt)} "
+            log(f"[selfplay] done in {offset_str(sp_dt)} "
                 f"({len(samples)} samples, {len(samples) / max(1e-9, sp_dt):.0f} samples/s, "
                 f"buffer {len(buffer)}/{buffer.capacity}"
                 + (f", {mem}" if mem else "") + ")")
             if len(buffer) < cfg.train.batch_size:
-                log(f"buffer warming ({len(buffer)}/{cfg.train.batch_size}) "
+                log(f"[train] buffer warming ({len(buffer)}/{cfg.train.batch_size}) "
                     f"— skipping train/arena")
                 continue
 
             # ── Training ─────────────────────────────────────────────────
-            log(f"training {cfg.train.train_steps_per_generation} steps "
+            log(f"[train] training {cfg.train.train_steps_per_generation} steps "
                 f"(batch {cfg.train.batch_size}, clip={cfg.train.grad_clip}, "
                 f"schedule={cfg.train.lr_schedule})…")
             tr_start = time.time()
@@ -552,12 +558,12 @@ def main() -> None:
                 net, optimizer, buffer, cfg, rng, device, generation)
             tr_dt = time.time() - tr_start
             mem = _gpu_memory_str()
-            log(f"training done in {offset_str(tr_dt)} "
+            log(f"[train] training done in {offset_str(tr_dt)} "
                 f"(ploss={policy_loss:.3f} vloss={value_loss:.3f} total={total_loss:.3f}"
                 + (f", {mem}" if mem else "") + ")")
 
             # ── Arena ────────────────────────────────────────────────────
-            log(f"arena: {cfg.train.arena_games} games "
+            log(f"[arena] {cfg.train.arena_games} games "
                 f"@ {cfg.train.arena_simulations} sims on {cfg.resolve_actors()} actor(s) "
                 f"vs current best…")
             ar_start = time.time()
@@ -569,7 +575,7 @@ def main() -> None:
             )
             ar_dt = time.time() - ar_start
             mem = _gpu_memory_str()
-            log(f"arena done in {offset_str(ar_dt)} "
+            log(f"[arena] done in {offset_str(ar_dt)} "
                 f"(candidate win rate {win_rate:.0%}, threshold {cfg.train.arena_win_rate:.0%}"
                 + (f", {mem}" if mem else "") + ")")
 
@@ -579,9 +585,9 @@ def main() -> None:
                 best_state = copy.deepcopy(bare.state_dict())
                 _save(best_path, {"model": best_state, "config": _config_summary(cfg),
                                   "generation": generation})
-                log(f"PROMOTED — new best.pt at generation {generation}")
+                log(f"[arena] PROMOTED — new best.pt at generation {generation}")
             else:
-                log(f"kept current best (win rate {win_rate:.0%} < {cfg.train.arena_win_rate:.0%})")
+                log(f"[arena] kept current best (win rate {win_rate:.0%} < {cfg.train.arena_win_rate:.0%})")
 
             # ── Checkpoint ───────────────────────────────────────────────
             _save(latest_path, {
@@ -610,7 +616,7 @@ def main() -> None:
             avg_gen = sum(gen_times) / len(gen_times)
             eta_gens = int(remaining // avg_gen) if avg_gen > 0 else 0
             log(
-                f"DONE samples={len(samples)} buffer={len(buffer)} "
+                f"[summary] DONE samples={len(samples)} buffer={len(buffer)} "
                 f"ploss={policy_loss:.3f} vloss={value_loss:.3f} arena={win_rate:.0%} "
                 f"{'PROMOTED' if promoted else 'kept'} gen_time={offset_str(gen_dt)} "
                 f"elapsed={offset_str(elapsed)} remaining={offset_str(remaining)} "
