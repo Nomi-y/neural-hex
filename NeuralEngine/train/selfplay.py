@@ -192,10 +192,9 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
     all workers.  Keeps the inference server fed with a constant-size batch.
 
     Reads shared counters from _WORKER[\"stream\"] (set by the initializer)."""
-    game_counter, seed_counter, lock, total_games = _WORKER["stream"]
+    game_counter, seed_counter, lock, total_games, max_conc = _WORKER["stream"]
     cfg = _WORKER["cfg"]
     evaluator = _WORKER["evaluator"]
-    max_conc = cfg.selfplay.parallel_games
     num_actions = cfg.game.num_actions
     reuse = cfg.mcts.reuse_tree
     sims = cfg.mcts.simulations
@@ -370,16 +369,17 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         # pool when a game finishes.  The GPU sees a constant-size batch of
         # leaves — no decline as games complete.
         game_counter = ctx.Value("i", 0)
-        seed_counter = ctx.Value("i", base_seed)
+        seed_counter = ctx.Value("i", 0)  # game counter, not RNG seed
         stream_lock = ctx.Lock()
-        stream_args = (game_counter, seed_counter, stream_lock, num_games)
+        max_conc = max(1, cfg.selfplay.parallel_games // max(1, actors))
+        stream_args = (game_counter, seed_counter, stream_lock, num_games, max_conc)
         tasks = [None] * actors  # dummy — real work is driven by shared counters
         fn = _play_worker_stream
         initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock, stream_args)
         gpu_label = (f"gpu-server({cfg.device})" if ngpus == 1
                      else f"gpu-server({ngpus}×{cfg.device})")
         log(f"[selfplay] fanning {num_games} games across {actors} actors "
-            f"(eval on {gpu_label}, streaming max_concurrent={cfg.selfplay.parallel_games})")
+            f"(eval on {gpu_label}, streaming {max_conc} concurrent per worker)")
     else:
         chunk_dev = cfg.worker_eval_device()
         sizes = chunk_sizes(cfg, num_games, actors, chunk_dev)
