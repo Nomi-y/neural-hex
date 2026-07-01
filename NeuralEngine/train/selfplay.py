@@ -300,21 +300,51 @@ def chunk_sizes(cfg: Config, num_games: int, actors: int, device: str = None) ->
     return split_evenly(num_games, actors * 4)
 
 
-def drain_pool(pool, result_iter, num_tasks: int, timeout: float, on_result: Callable[[object], None]) -> bool:
+def drain_pool(pool, result_iter, num_tasks: int, timeout: float, on_result: Callable[[object], None],
+               read_progress: Optional[Callable[[], int]] = None) -> bool:
     """Consume `num_tasks` results from an `imap_unordered` iterator, calling `on_result(item)` for each.
 
-    If no result arrives within `timeout` seconds (<=0 disables the watchdog), assume a worker has died
-    or deadlocked: terminate the pool and stop early. Returns True if every result was collected, False
-    if it timed out. This is the guard against the imap_unordered hang where one dead worker would
-    otherwise block the parent forever (no per-result deadline of its own)."""
+    Watchdog (terminate the pool and return False if it fires; `timeout` <= 0 disables it):
+
+      * default (`read_progress` is None) — fire when no RESULT arrives within `timeout`. Right for the
+        chunked paths, where results stream back as chunks finish, so a silent gap means a dead worker.
+
+      * streaming self-play (`read_progress` given) — fire only when that counter (completed games)
+        hasn't advanced for `timeout`. Streaming workers return just ONCE, at the very end of the whole
+        generation, so a return-based deadline would kill a slow-but-healthy generation and discard
+        every completed game (a random-net gen 1 can run well past 1800s before the first worker
+        returns). Progress-based detection still catches a true hang — the game count simply stalls."""
     to = timeout if timeout and timeout > 0 else None
-    for _ in range(num_tasks):
+    if read_progress is None:
+        for _ in range(num_tasks):
+            try:
+                item = result_iter.next(to)
+            except mp.TimeoutError:
+                pool.terminate()
+                return False
+            on_result(item)
+        return True
+
+    # Progress-aware (stall) watchdog: poll for results; on each gap check that games are still
+    # completing, and only give up when the count has been frozen for `timeout`.
+    poll = min(30.0, to) if to else 30.0
+    last_count = read_progress()
+    last_advance = time.time()
+    collected = 0
+    while collected < num_tasks:
         try:
-            item = result_iter.next(to)
+            item = result_iter.next(poll)
         except mp.TimeoutError:
-            pool.terminate()
-            return False
+            count = read_progress()
+            if count != last_count:
+                last_count, last_advance = count, time.time()
+            elif to is not None and time.time() - last_advance >= to:
+                pool.terminate()
+                return False
+            continue
         on_result(item)
+        collected += 1
+        last_count, last_advance = read_progress(), time.time()  # a return is progress too
     return True
 
 
@@ -360,6 +390,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
     # only sees them return at the very end, so its callback would just add a redundant, overshooting
     # line there. Keep the parent progress for the chunked path, where it IS the incremental signal.
     emit_progress = None if use_server else progress
+    read_progress: Optional[Callable[[], int]] = None  # streaming sets this → stall-based watchdog
 
     def _on(item) -> None:
         nonlocal done
@@ -398,6 +429,7 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
         stream_lock = ctx.Lock()
         max_conc = max(1, cfg.selfplay.parallel_games // max(1, actors))
         stream_args = (game_counter, seed_counter, stream_lock, num_games, max_conc, progress_log)
+        read_progress = lambda: game_counter.value  # completed-game count → watchdog measures progress
         tasks = [None] * actors  # dummy — real work is driven by shared counters
         fn = _play_worker_stream
         initializer, initargs = _init_worker_remote, (cfg, servers_data, counter, lock, stream_args)
@@ -421,12 +453,13 @@ def generate(cfg: Config, state_dict, num_games: int, base_seed: int,
     try:
         with ctx.Pool(processes=actors, initializer=initializer, initargs=initargs) as pool:
             it = pool.imap_unordered(fn, tasks)
-            ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on)
+            ok = drain_pool(pool, it, len(tasks), cfg.train.selfplay_timeout, _on, read_progress)
     finally:
         for srv in servers:
             srv.stop()
     if not ok:
-        log(f"[selfplay] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s with no "
-            f"result — terminated pool, continuing with {done}/{num_games} games "
+        stalled = " with no games completing" if read_progress is not None else " with no result"
+        log(f"[selfplay] WARNING: worker watchdog fired after {cfg.train.selfplay_timeout:.0f}s"
+            f"{stalled} — terminated pool, continuing with {done}/{num_games} games "
             f"({sum(len(r) for r in results)} samples).")
     return [s for r in results for s in r]

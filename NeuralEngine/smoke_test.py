@@ -110,11 +110,62 @@ def main() -> None:
     cfg.train.arena_timeout = 900.0
     print(f"  watchdog path returned {wr3:.0%} without hanging")
 
+    _test_drain_watchdog()
+
     print(f"  solver on a near-terminal position returned value={val} action={action}")
 
     cuda_checks()
     cuda_training_loops()
     print("SMOKE TEST PASSED")
+
+
+def _test_drain_watchdog() -> None:
+    """drain_pool's watchdog has two modes. Regression guard for the bug where the streaming
+    self-play watchdog measured time-since-a-worker-RETURNED — but streaming workers return only at
+    the very end, so a slow-but-healthy gen-1 tripped the 1800s deadline and its 500+ completed games
+    were discarded (0 samples, no training). The progress-aware mode must tolerate a slow generation
+    (games still completing) and fire only on a true stall."""
+    import multiprocessing as mp
+    import time
+    from train.selfplay import drain_pool
+
+    class _FakePool:
+        def __init__(self): self.terminated = False
+        def terminate(self): self.terminated = True
+
+    class _Iter:
+        """`.next(timeout)` stalls (raises TimeoutError) `stalls` times — modelling streaming workers
+        that haven't returned yet — then yields the queued end-of-gen results."""
+        def __init__(self, stalls, items): self.stalls, self.items = stalls, list(items)
+        def next(self, timeout):
+            if self.stalls > 0:
+                self.stalls -= 1
+                time.sleep(min(timeout, 0.02))
+                raise mp.TimeoutError()
+            if self.items:
+                return self.items.pop(0)
+            time.sleep(min(timeout, 0.02))
+            raise mp.TimeoutError()
+
+    # Slow but progressing: stalls outlast the timeout, but games keep completing → must NOT fire.
+    counter = {"n": 0}
+    def advancing():
+        counter["n"] += 1
+        return counter["n"]
+    pool = _FakePool()
+    ok = drain_pool(pool, _Iter(5, [("r", [])]), 1, 0.1, lambda _i: None, read_progress=advancing)
+    assert ok and not pool.terminated, "progress-aware watchdog killed a healthy (progressing) gen"
+
+    # Real stall: no result and the game count frozen → must fire.
+    pool2 = _FakePool()
+    ok2 = drain_pool(pool2, _Iter(99, []), 1, 0.1, lambda _i: None, read_progress=lambda: 42)
+    assert (not ok2) and pool2.terminated, "watchdog failed to fire on a real stall"
+
+    # Return-based (chunked) mode: a silent gap still fires.
+    pool3 = _FakePool()
+    ok3 = drain_pool(pool3, _Iter(99, []), 1, 0.1, lambda _i: None)
+    assert (not ok3) and pool3.terminated, "return-based watchdog failed to fire"
+    print("  ✓ drain_pool watchdog: tolerates slow-but-progressing gens, fires on real stalls")
 
 
 def cuda_checks() -> None:
