@@ -10,3 +10,7 @@ hex-admin.pub
 # Local verification artifacts — browser screenshots and the MCP scratch dir.
 .playwright-mcp/
 /*.png
+
+# Training data — large checkpoint files synced from S3.
+training-data/checkpoints/
+training-data/logs/
