@@ -1140,3 +1140,37 @@ document.getElementById(...).value reads. Verified in a real browser: the sign-i
 renders, dev-login works, and the dashboard (incl. the new Engine vs Engine radios)
 loads. WHY it matters as a rule: never put TS-only syntax (casts, type annotations,
 generics) inside the AdminPage inline script — it ships to the browser as-is.
+
+Hex — Iteration 22 summary (engine-v-engine follow-ups + engine deployment): three asks —
+let an engine play itself, let managed engines be picked for engine-vs-engine, and make it
+trivial to spin up self-hosted engines to spectate.
+
+Self-play (Backend + Frontend). An engine can now take both seats of an engine-vs-engine
+match. WHY the fix lives where it does: the seat->colour question is only meaningful for a
+self-playing engine as "the side to move", so GameInstance.ColorForParticipant returns
+this.Turn when one participant holds both seats — that single change makes move validation,
+the swap decision and the pushed GameView all follow the turn, so both managed (orchestrator-
+driven) and external (WebSocket) engines play both colours with no special-casing elsewhere.
+CreateEngineMatch dropped its "cannot play against itself" guard and suffixes the seat names
+" (Red)"/" (Blue)" so the spectator can tell the sides apart; HandleGameChanged pushes a
+self-playing engine its changed game once, not twice. Frontend: the e-v-e modal's two engine
+pickers no longer cross-filter, so the same engine can be chosen on both sides.
+
+Managed engines selectable (Backend). Picking a managed engine (First Free / Random /
+Heuristic) for an e-v-e match failed with "Both participants must be engines". CAUSE:
+CreateEngineMatch and GetLiveEngineMatches used the cache-only Participants.GetCached, but
+managed engines live in the store and are NOT cached after a restart — EnsureManagedEngines
+finds them already persisted and skips the register-and-cache path. Both now use async
+Participants.Get (cache-then-store). Tests: a managed engine plays itself to completion; a
+fresh service over an existing store (a restart) creates managed-vs-managed and self-play
+matches. Suite 94/0.
+
+Engine deployment (docker-compose.engines.yml). A compose file to run NeuralEngine
+checkpoints as live, spect-able opponents: it reuses the NeuralEngine image but overrides the
+command to python -m engine.play_engine, joins the main stack's hex_default network (so it
+reaches ws://backend:3001), and per engine needs only a mounted checkpoint (MODEL_PATH) and a
+credential (ENGINE_ID/ENGINE_TOKEN from the admin UI). A shared YAML anchor keeps adding an
+engine to a copy-paste of one service block; .env.engines.example documents the vars
+(.env.engines is gitignored). Verified end-to-end: two engines from training-data run1 (gen14)
+and run2 (gen22) 11x11 checkpoints registered, brought up via the compose file, played a live
+11x11 match against each other, watched from the View Matches tab.

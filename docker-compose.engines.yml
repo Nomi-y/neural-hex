@@ -1,0 +1,68 @@
+# ============================================================================
+#  Hex — self-hosted play engines
+# ============================================================================
+# Spin up one or more NeuralEngine checkpoints as live opponents that connect to
+# the running Hex backend and can be watched (and pitted against each other) from
+# the "View Matches" tab.  Each engine needs only two things: a weight file and a
+# credential — everything else is shared.
+#
+# Prerequisites
+#   1. The main stack is up (it creates the `hex_default` network the engines join):
+#        docker compose up --build -d
+#   2. Register each engine in the admin UI — http://localhost:3001/Admin →
+#      Engines tab → "Register external engine".  Registration returns an
+#      EngineId and a one-time Token.  Set the engine's board-size range to match
+#      the checkpoint (the training-data checkpoints here are 11x11).
+#   3. Copy the env template and fill in the ids/tokens:
+#        cp .env.engines.example .env.engines
+#
+# Run
+#   docker compose -f docker-compose.engines.yml --env-file .env.engines up --build -d
+#
+# Add more engines
+#   Copy an `engineN` service block, give it a new checkpoint mount and its own
+#   ENGINEn_ID / ENGINEn_TOKEN.  The image is built once and reused by every engine.
+# ============================================================================
+
+name: hex-engines
+
+# Shared engine definition — every engine service merges this and only overrides
+# its credentials and weight file.
+x-engine: &engine
+  build:
+    context: ./NeuralEngine
+    dockerfile: Containerfile
+  image: hex-play-engine
+  command: python -u -m engine.play_engine
+  environment: &engine-env
+    ENGINE_WS: ws://backend:3001          # the backend service name on the shared network
+    MODEL_PATH: /weights/model.pt         # where each service mounts its checkpoint
+    DEVICE: cpu                           # inference for spectating is cheap; no GPU needed
+    ENGINE_SIMS: ${ENGINE_SIMS:-200}      # MCTS sims/move — lower is faster/weaker
+  networks: [hexnet]
+  restart: unless-stopped
+
+services:
+  engine1:
+    <<: *engine
+    environment:
+      <<: *engine-env
+      ENGINE_ID: ${ENGINE1_ID:?set ENGINE1_ID in .env.engines}
+      ENGINE_TOKEN: ${ENGINE1_TOKEN:?set ENGINE1_TOKEN in .env.engines}
+    volumes:
+      - ${ENGINE1_MODEL:-./training-data/run1/checkpoints/best.pt}:/weights/model.pt:ro
+
+  engine2:
+    <<: *engine
+    environment:
+      <<: *engine-env
+      ENGINE_ID: ${ENGINE2_ID:?set ENGINE2_ID in .env.engines}
+      ENGINE_TOKEN: ${ENGINE2_TOKEN:?set ENGINE2_TOKEN in .env.engines}
+    volumes:
+      - ${ENGINE2_MODEL:-./training-data/run2/checkpoints/best.pt}:/weights/model.pt:ro
+
+# Join the network the main stack created so engines can reach ws://backend:3001.
+networks:
+  hexnet:
+    external: true
+    name: hex_default
