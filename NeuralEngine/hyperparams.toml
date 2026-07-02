@@ -178,9 +178,9 @@ arena_win_rate = 0.55
 arena_simulations = 120
 # [SELFPLAY_TIMEOUT] Watchdog (seconds): if the self-play worker pool returns nothing for this long
 # it's assumed hung and terminated (partial results kept). Scale with generation size.
-selfplay_timeout = 1800.0
+selfplay_timeout = 3600.0
 # [ARENA_TIMEOUT] Watchdog (seconds) for the arena pool — same idea.
-arena_timeout = 900.0
+arena_timeout = 1800.0
 # [CHECKPOINT_DIR] Where latest.pt / best.pt (and optional gen snapshots) are written.
 # Bind-mount this so checkpoints survive container restarts (and enable resume).
 checkpoint_dir = "checkpoints"
