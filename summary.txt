@@ -1174,3 +1174,26 @@ engine to a copy-paste of one service block; .env.engines.example documents the 
 (.env.engines is gitignored). Verified end-to-end: two engines from training-data run1 (gen14)
 and run2 (gen22) 11x11 checkpoints registered, brought up via the compose file, played a live
 11x11 match against each other, watched from the View Matches tab.
+
+Hex — Iteration 23 summary (spectator polish): two fixes to watching a live match.
+
+Live updates (Frontend, MatchReplay.tsx). The spectator board was frozen until a manual
+refresh: MatchReplay fetched /Api/Matches/:id/Replay exactly once (the same one-shot the
+finished-game replay uses). WHY it now self-updates without a WebSocket: while the fetched
+Status is "Active" it polls /Replay every 2s, and the auto-play loop no longer pauses at the
+end for a live game — it stays "playing" and waits at the live edge, so when the poll brings
+in the next move the effect re-runs and advances, following the game. Polling stops the moment
+the game finishes; Play stays enabled at the edge of a live match so a paused viewer can
+re-follow. Finished-game replay is unchanged (its Status is never Active, so it never polls).
+
+Swap shown as a recoloured stone (Frontend, ReplaySession.ts + MatchReplay.tsx). Watching a
+swap was confusing: the backend implements the swap by exchanging seats, so the player who
+physically opened appeared as the second colour mid-game. Now every player keeps the colour
+they opened with. WHY the flip lives in the replay reconstruction: the recorded move colours
+flip at the swap (seat exchange), so BuildReplayView renders in the original-owner convention —
+once the swap has been played back it flips the recorded colours for display, which recolours
+the swapped opening stone to the swapper's colour (the ⇄ glyph stays, per request — recolour is
+additive). Player-card names/winner, the running indicator, clocks and the move-list chips are
+un-swapped to match. Verified live: an engine match's opening stone recolours at the swap ply
+while both players keep one colour throughout. (Analysis eval-graph still labels by recorded
+colour — a follow-up if analysis is ever run on a swapped game.)
