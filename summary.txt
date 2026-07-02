@@ -1334,6 +1334,15 @@ arena/recency, ~148 samples/game confirming longer games) and the real train.tra
 2-gen CUDA loop at 13x13 on the 2070.
 
 Also (throughput follow-up, no code change): coalescing (INFERENCE_COALESCE_MS 1–4ms) was measured to
-make self-play WORSE — the loop is round-trip/latency-bound (single inference-server process; GPU ~78%,
-CPU ~20%, tiny batches), not batch-size-starved. The no-added-latency lever is raising PARALLEL_GAMES
-(more games in flight → bigger natural batches) rather than adding coalesce delay; keep coalesce at 0.
+make self-play WORSE — adding per-request latency, not fixing a batch-size shortage; keep coalesce at 0.
+
+BUGFIX (hardware_monitor.py): the [hw] cpu% line under-reported ~10× on the rented box (logged 6% while
+the operator saw 60–70%). Root cause: _CpuReader normalised the cgroup usage_usec by
+len(os.sched_getaffinity(0)) — but a CFS quota caps CPU *time* without shrinking the affinity mask, so
+that returns ALL host cores (~128), not the container's ~13-vCPU allocation. Now divides by
+config.available_cpus() (affinity ∩ CFS quota — the same '13 usable cpus' the trainer logs). Correcting
+the metric also corrected the diagnosis: 13x13 self-play is genuinely CPU-bound (~62% of 13 cores), a
+balanced CPU/GPU pipeline — NOT the idle-workers/round-trip-bound picture the buggy 6% implied. So the
+right throughput lever for 13x13 is USE_VC=0 (drop the CPU-heavy virtual-connection tree cost during
+training — the deployed engine forces VC on regardless), not simply more parallel games. The leaves/s
+drop vs 11x11 is expected: heavier per-leaf forward (169 vs 121 cells) + heavier CPU tree search.
