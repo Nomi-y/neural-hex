@@ -75,10 +75,14 @@ def load_engine(model_path: str, device: str):
     ckpt = torch.load(model_path, map_location=device, weights_only=False)
     c = ckpt["config"]
     net = HexNet(c["board_size"], c["in_planes"], c["channels"], c["blocks"], c["value_hidden"],
-                 c.get("use_se", False))
+                 c.get("use_se", False),
+                 c.get("policy_blocks", 0), c.get("value_blocks", 0))
     net.load_state_dict(CleanStateDict(ckpt["model"]))
     net.eval().to(device)
-    print(f"[engine] loaded {model_path}: board={c['board_size']} net={c['channels']}x{c['blocks']} "
+    pb = c.get("policy_blocks", 0)
+    vb = c.get("value_blocks", 0)
+    trunk_desc = f"policy={pb}+value={vb}" if (pb and vb) else f"{c['blocks']}"
+    print(f"[engine] loaded {model_path}: board={c['board_size']} net={c['channels']}x{trunk_desc} "
           f"generation={ckpt.get('generation', '?')} device={device}", flush=True)
     return net, c["board_size"], Evaluator(net, device)
 

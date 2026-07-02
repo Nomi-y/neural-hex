@@ -15,7 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$SCRIPT_DIR/../NeuralEngine"
-CKPT_DIR="$SCRIPT_DIR/checkpoints"
+CKPT_DIR="$SCRIPT_DIR/run1/checkpoints"
 RUN2_DIR="$SCRIPT_DIR/run2/checkpoints"
 VENV="$ENGINE_DIR/.venv"
 
