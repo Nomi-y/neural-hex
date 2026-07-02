@@ -1302,3 +1302,38 @@ WHY: the operator pulls instead of rebuilding on every box; per-engine files are
 managed; and the engine wheel tracks the inference GPU, not the trainer's. Verified: entrypoint bash
 syntax, both compose files (`docker compose config`) and the workflow YAML all parse; the singular
 template resolves to the GHCR image with HEX_ROLE=engine and the checkpoint mounted.
+
+Hex — Iteration 27 summary (NeuralEngine: 13x13 target — cuda-5090-13 preset for run4). Decision:
+throw away the early run3 (11x11 is already a strong engine) and put the 5090 on a bigger BOARD rather
+than a bigger net. WHY not a bigger 11x11 net: capacity is NOT the 11x11 bottleneck (value OVERfits,
+policy keeps improving, the wall is self-play throughput), so more params within a fixed budget = fewer
+games = a weaker engine; and "GPU underused" is a vanity metric, not a reason to bloat the net. The
+existing 256-ch / 24M-param net is essentially an AlphaGo-Zero 20-block net — generous for 121 cells but
+APPROPRIATELY sized for 13x13 (169 cells), which also lifts GPU utilisation for free (bigger tensors =
+more real math per forward, so the IPC round-trip stops dominating).
+
+New [presets.cuda-5090-13]: board_size=13, the run3 net + full value-overfit pack verbatim
+(value_dropout 0.3, value_target_blend 0.35, value_loss_weight 1.5, recency_hl 3.0). Retuned for the
+bigger board: dirichlet_alpha 0.15→0.11 (scaled ~121/169 for the larger move set), temperature_moves
+20→30 (bigger opening to diversify), replay_buffer 500k→750k (13x13 games run ~40% longer → more
+samples/gen; keeps the ~10-gen window while recency down-weights the extra). sims kept at 600
+(env-tunable; MCTS_SIMS=800 for deeper labels once the net matures — a fresh net on a harder board gains
+more from generation count than per-move depth early). solver_empty_threshold kept at 7: +1 was weighed
+and declined — the endgame is a SMALLER fraction of longer 13x13 games and the exact solver runs on the
+CPU-bound self-play workers, so +1 costs throughput (the binding constraint) more than the marginal
+perfect-label gain; prefer raising solver_node_budget over the threshold if more exact signal is wanted.
+Fresh start (board size bakes into the net/checkpoints).
+
+CI: cuda-5090-13 added to build-image.yml's preset dropdown; the Blackwell cu128-forcing widened to a
+`cuda-5090*` glob so the 13 build also ships cu128 for the 5090's sm_120.
+
+Verified locally: apply_preset merges the preset (board 13, dirichlet 0.11, temp-moves 30, buffer 750k,
+full value pack); the full 256x20 net builds + forwards at 13x13 (24.4M params, policy 170 / value 1);
+the whole pipeline runs end-to-end at BOARD_SIZE=13 on CPU (rules/encode/mcts/self-play+solver/train/
+arena/recency, ~148 samples/game confirming longer games) and the real train.train entrypoint runs the
+2-gen CUDA loop at 13x13 on the 2070.
+
+Also (throughput follow-up, no code change): coalescing (INFERENCE_COALESCE_MS 1–4ms) was measured to
+make self-play WORSE — the loop is round-trip/latency-bound (single inference-server process; GPU ~78%,
+CPU ~20%, tiny batches), not batch-size-starved. The no-added-latency lever is raising PARALLEL_GAMES
+(more games in flight → bigger natural batches) rather than adding coalesce delay; keep coalesce at 0.

@@ -24,6 +24,7 @@ on:
           - cuda-moon
           - cuda-affordable-11
           - cuda-5090
+          - cuda-5090-13
       cuda:
         description: "Install the CUDA torch wheel (GPU image)"
         type: boolean
@@ -80,10 +81,14 @@ jobs:
           [ -z "$CUDA_WHEEL" ] && CUDA_WHEEL="cu121"
           [ "$CUDA_WHEEL" = "default" ] && CUDA_WHEEL="cu121"
           # Blackwell (RTX 5090, sm_120) has no kernels in cu121 — force cu128 unless overridden.
-          if [ "$PRESET" = "cuda-5090" ] && [ "$CUDA_WHEEL" = "cu121" ]; then
-            CUDA_WHEEL="cu128"
-            echo "note: cuda-5090 preset → forcing CUDA_WHEEL=cu128 (Blackwell sm_120)"
-          fi
+          # Matches every 5090 preset (cuda-5090, cuda-5090-13, …).
+          case "$PRESET" in
+            cuda-5090*)
+              if [ "$CUDA_WHEEL" = "cu121" ]; then
+                CUDA_WHEEL="cu128"
+                echo "note: $PRESET preset → forcing CUDA_WHEEL=cu128 (Blackwell sm_120)"
+              fi ;;
+          esac
 
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           IMAGE="ghcr.io/${OWNER}/neural-hex"

@@ -291,3 +291,12 @@ backend_ws = "ws://localhost:3001"
   selfplay = { parallel_games = 512, value_target_blend = 0.35 }
   train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 1000, batch_size = 2048, replay_buffer_size = 500000, replay_recency_halflife = 3.0, value_loss_weight = 1.5, arena_games = 48, arena_simulations = 192 }
   device = "cuda"
+
+[presets.cuda-5090-13]
+  description = "RTX 5090 (32GB) + ~16 vCPU — 13x13 (run4). REUSES the run3 256-ch separate-trunk net verbatim — now APPROPRIATELY sized for the bigger board rather than oversized as it was on 11x11 (24M params ≈ an AlphaGo-Zero 20-block net; that capacity wants a bigger board, not a bigger net). Full value-overfit pack kept (value_dropout 0.3, value_target_blend 0.35, value_loss_weight 1.5, recency_hl 3.0). Retuned for 13x13: dirichlet-alpha scaled down for the larger move set (~121/169 × 0.15 ≈ 0.11); more temperature plies for the bigger opening; larger replay buffer since 13x13 games are ~40% longer (more samples/gen) — keeps the generational window while recency down-weights the extra. solver_empty_threshold stays 7 (endgame is a SMALLER fraction of longer games, and +1 taxes the CPU-bound self-play more than the marginal perfect-label gain is worth). Fresh start — board size bakes into the net. mcts sims env-tunable (MCTS_SIMS=800 for deeper labels once the net matures)."
+  game = { board_size = 13 }
+  net = { channels = 256, blocks = 20, use_se = true, value_hidden = 256, policy_blocks = 16, value_blocks = 4, value_dropout = 0.3 }
+  mcts = { simulations = 600, c_puct = 1.5, dirichlet_alpha = 0.11, use_virtual_connection = true, fpu_reduction = 0.25, reuse_tree = true }
+  selfplay = { parallel_games = 512, temperature_moves = 30, value_target_blend = 0.35 }
+  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 1000, batch_size = 2048, replay_buffer_size = 750000, replay_recency_halflife = 3.0, value_loss_weight = 1.5, arena_games = 48, arena_simulations = 192 }
+  device = "cuda"
