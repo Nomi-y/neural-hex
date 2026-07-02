@@ -134,9 +134,10 @@ def play_games(evaluator: Evaluator, cfg: Config, num_games: int, add_noise: boo
             if _advance_game(g, root, cfg, rng, resign):
                 completed += 1
                 # Extract samples from the finished game
+                blend = cfg.selfplay.value_target_blend
                 for planes, pi, to_move, rv in g.history:
-                    z = 1.0 if g.winner == to_move else -1.0
-                    z = 0.5 * z + 0.5 * float(rv)
+                    outcome = 1.0 if g.winner == to_move else -1.0
+                    z = blend * outcome + (1.0 - blend) * float(rv)
                     samples.append((planes, pi, z))
                 # Replace with a new game if we haven't reached the target
                 if started < num_games:
@@ -292,9 +293,10 @@ def _play_worker_stream(_args=None) -> Tuple[int, List[Sample]]:
                     if g.winner == g.would_resign:               # …and the would-resign side still won
                         fp_ct.value += 1
             _maybe_log_progress()
+            blend = cfg.selfplay.value_target_blend
             for planes, pi, to_move, rv in g.history:
-                z = 1.0 if g.winner == to_move else -1.0
-                z = 0.5 * z + 0.5 * float(rv)
+                outcome = 1.0 if g.winner == to_move else -1.0
+                z = blend * outcome + (1.0 - blend) * float(rv)
                 samples.append((planes, pi, z))
             slots[idx] = _new_game(cfg, board, swap, rng) if _claim_seed() is not None else None
 

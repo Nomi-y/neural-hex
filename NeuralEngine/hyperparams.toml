@@ -44,6 +44,10 @@ value_hidden = 128
 # [NET_SE] Squeeze-excitation blocks (global average-pool gate per block → board-wide context;
 # helps Hex connection reading). false default; true adds ~5% params. Toggling it is a fresh start.
 use_se = false
+# [NET_VALUE_DROPOUT] Dropout on the value-head hidden layer (0 = off). Regularises the value head
+# against memorising each game's single shared outcome label — the main driver of the late-generation
+# vloss creep. ~0.2–0.4 with separate value trunks. Inactive at inference; toggling it is a fresh start.
+value_dropout = 0.0
 
 [mcts]
 # [MCTS_SIMS] Tree-search simulations per move during self-play — the biggest strength↔speed
@@ -110,6 +114,11 @@ resign_min_ply = 18
 # [RESIGN_PLAYTHROUGH] Fraction of games that ignore resignation and play to the end, so their true
 # outcome measures the resignation false-positive rate (reported on the [selfplay] resign line). ~0.1.
 resign_playthrough = 0.1
+# [VALUE_TARGET_BLEND] Value label z = blend·(game outcome ±1) + (1−blend)·(MCTS root value). The ±1
+# outcome is a single high-variance draw of the position's true value; the root value is the lower-
+# variance MCTS-averaged estimate. Lowering toward the root value (e.g. 0.3–0.4) cuts target variance —
+# lower vloss floor and less memorisation — at the cost of leaning on the net's own estimate. 0.5 = even.
+value_target_blend = 0.5
 
 [train]
 # [TRAIN_HOURS] Wall-clock training budget; the loop keeps running generations until this elapses.
@@ -124,6 +133,11 @@ games_per_generation = 256
 # [REPLAY_BUFFER] Max self-play samples (positions) kept for training; oldest are evicted. ~100k–1M.
 # Spans several generations of data and bounds RAM use.
 replay_buffer_size = 200_000
+# [REPLAY_RECENCY_HALFLIFE] Recency-weighted sampling: a sample's draw weight halves every this-many
+# generations of age. Keeps a big buffer for value-target diversity while biasing training toward the
+# freshest (strongest) games, so training stops waiting ~buffer/gen generations for stale positions to
+# evict. ~2–4 gens is a good bias; 0 = uniform sampling (the old flat-buffer behaviour).
+replay_recency_halflife = 0.0
 # [BATCH_SIZE] SGD minibatch size per training step. 256–1024 (GPU); up to 4096 on big GPUs.
 # Larger = smoother gradients, more VRAM.
 batch_size = 512
@@ -270,10 +284,10 @@ backend_ws = "ws://localhost:3001"
   device = "cuda"
 
 [presets.cuda-5090]
-  description = "RTX 5090 (32GB) + ~16 vCPU — big 256-ch separate-trunk net for 11x11. Policy & value each get their own residual tower (16+4 blocks) after a shared stem, eliminating gradient competition. The NET is FIXED once training starts; schedule is env-tunable without a rebuild."
+  description = "RTX 5090 (32GB) + ~16 vCPU — big 256-ch separate-trunk net for 11x11. Policy & value each get their own residual tower (16+4 blocks) after a shared stem, eliminating gradient competition. run3 value-overfit pack: value-head dropout, a variance-lowered value-target blend (0.35 outcome / 0.65 MCTS root value), value_loss_weight back to 1.5 (separate trunks no longer need the 3× crutch), and recency-weighted replay sampling (halflife 3 gens). The NET is FIXED once training starts; schedule/blend/recency are env-tunable without a rebuild."
   game = { board_size = 11 }
-  net = { channels = 256, blocks = 20, use_se = true, value_hidden = 256, policy_blocks = 16, value_blocks = 4 }
+  net = { channels = 256, blocks = 20, use_se = true, value_hidden = 256, policy_blocks = 16, value_blocks = 4, value_dropout = 0.3 }
   mcts = { simulations = 600, use_virtual_connection = true, fpu_reduction = 0.25, reuse_tree = true }
-  selfplay = { parallel_games = 512 }
-  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 1000, batch_size = 2048, replay_buffer_size = 500000, arena_games = 48, arena_simulations = 192 }
+  selfplay = { parallel_games = 512, value_target_blend = 0.35 }
+  train = { hours = 50.0, games_per_generation = 768, train_steps_per_generation = 1000, batch_size = 2048, replay_buffer_size = 500000, replay_recency_halflife = 3.0, value_loss_weight = 1.5, arena_games = 48, arena_simulations = 192 }
   device = "cuda"

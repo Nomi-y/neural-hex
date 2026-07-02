@@ -1227,3 +1227,52 @@ snapshot and to wire the existing pieces into the live screens.
 Note: the Frontend Build script is `vite build` (no typecheck) — run `bunx tsc --noEmit` separately.
 Both submodules typecheck clean; frontend vitest green; full stack rebuilt and verified in-browser
 (live scrub, realtime follow, board-click reset, finished-game outline, hover ring, GPU matches).
+
+Hex — Iteration 25 summary (NeuralEngine: value-loss overfit + replay staleness). After two long
+training runs (256-ch net, 11x11) the pattern was clear from the logs: policy loss falls
+monotonically and the arena keeps promoting (the engine strengthens), but value loss (vloss) bottoms
+out around gen 3-5 then creeps upward for the rest of the run. run1 (shared trunk, value_loss_weight
+1.0) hit vloss 0.155 by gen 14; run2 (separate policy/value trunks, w=3.0) reached the same only by
+~gen 29 and produced the stronger engine — so the separate-trunk fix worked, but the creep persists,
+just slower.
+
+WHY it happens (two mechanisms, same direction). (1) The reported vloss is TRAINING loss on buffer
+samples, and the target distribution is non-stationary: as self-play sharpens, games become decisive
+and value targets spread across the full ±1 range, so the irreducible MSE floor rises — part of the
+"degradation" is the value problem getting harder, not the head getting worse (the tell: ploss keeps
+falling and the arena keeps promoting). (2) Real overfitting: each game contributes ~45 positions that
+all share ONE outcome label, so the count of INDEPENDENT value labels per gen is ~768 (games), not
+~45k (positions); a big buffer churned ~4x/gen lets the value head memorise those shared labels.
+
+Four levers added, all config knobs (env > hyperparams.toml > default), all defaulting to the OLD
+behaviour so nothing changes unless opted in:
+- Held-out val_vloss instrument (train.py _fresh_value_loss): each gen, before training, measure the
+  net's value MSE on the FRESH self-play samples it has NOT trained on yet, logged next to vloss on
+  the [train]/[summary] lines. train≈val => rising floor (benign); train≪val => memorisation. This is
+  the instrument the other levers are tuned against — you can finally see which mechanism dominates.
+- VALUE_TARGET_BLEND (selfplay): the value label z = blend·(±1 outcome) + (1−blend)·(MCTS root value)
+  was hardcoded 0.5/0.5; now a knob. Lowering toward the lower-variance, MCTS-averaged root value cuts
+  target variance — lower floor, less memorisation. Bumping MCTS 400->600 makes root value a better
+  target, so the two compound.
+- Value-head dropout (NET_VALUE_DROPOUT, model.py): dropout on the value-head hidden layer, inactive
+  at inference (self-play/engine unaffected). Directly fights outcome memorisation. A behaviour/arch
+  change (fresh start), which is why it lands with run3.
+- value_loss_weight: the 3.0 was a crutch for shared-trunk value starvation; separate trunks have no
+  gradient competition to overcome, so the run3 preset drops it to 1.5.
+
+Replay buffer staleness (replay_buffer.py — the other issue found in the logs). A fixed 500k buffer
+(~11 gens at steady-state ~45k samples/gen) sampled uniformly means the newest, best generation is
+only ~9% of training and gen-1 random-net data lingers ~11 gens; enlarging 200k->500k for diversity
+had HALVED the adaptation rate (200k was ~22% newest, ~4 gens). Fix WITHOUT losing the diversity that
+also regularises vloss: the buffer is now organised into per-generation blocks with recency-weighted
+sampling (REPLAY_RECENCY_HALFLIFE) — a sample's draw weight halves every N generations of age, so
+recent positions dominate while old ones stay RESIDENT for diversity instead of waiting to evict.
+Whole-generation eviction under the RAM cap; legacy flat snapshots still load; halflife 0 = the old
+uniform behaviour.
+
+run3 (cuda-5090 preset) bakes the pack: value_dropout 0.3, value_target_blend 0.35, value_loss_weight
+1.5, replay_recency_halflife 3.0 (mcts 600 already in). Verified on the 2070: full smoke_test (incl.
+the real 2-gen CUDA training loop), test_logging and test_inference_server all green; a new CPU unit
+test covers recency weighting / uniform / whole-gen eviction / legacy snapshot load; a real run shows
+val_vloss logging next to vloss (0.24 vs 0.20 — the small, healthy fresh/train gap of an un-overfit
+net). Knobs default to old behaviour, so existing presets/runs are unaffected.

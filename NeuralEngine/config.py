@@ -172,6 +172,9 @@ class NetConfig:
     # gradient competition between policy and value heads.
     policy_blocks: int = _env_int("NET_POLICY_BLOCKS", 0, "net.policy_blocks")
     value_blocks: int = _env_int("NET_VALUE_BLOCKS", 0, "net.value_blocks")
+    # Dropout on the value-head hidden layer (0 = off) — regularises against value-outcome
+    # memorisation.  Toggling it is a fresh start (changes behaviour, though not param shapes).
+    value_dropout: float = _env_float("NET_VALUE_DROPOUT", 0.0, "net.value_dropout")
 
 
 @dataclass
@@ -197,6 +200,11 @@ class SelfPlayConfig:
     resign_threshold: float = _env_float("RESIGN_THRESHOLD", -0.92, "selfplay.resign_threshold")
     resign_min_ply: int = _env_int("RESIGN_MIN_PLY", 12, "selfplay.resign_min_ply")
     resign_playthrough: float = _env_float("RESIGN_PLAYTHROUGH", 0.1, "selfplay.resign_playthrough")
+    # Value-label blend: z = blend·(game outcome ±1) + (1−blend)·(MCTS root value).  The ±1 outcome is
+    # a single high-variance Bernoulli draw of the position's true value; the root value is the lower-
+    # variance MCTS-averaged estimate.  Lowering blend toward the root value cuts target variance (lower
+    # vloss floor, less memorisation) at the cost of leaning on the net's own estimate.  0.5 = today's.
+    value_target_blend: float = _env_float("VALUE_TARGET_BLEND", 0.5, "selfplay.value_target_blend")
 
 
 @dataclass
@@ -206,6 +214,10 @@ class TrainConfig:
     num_actors: int = _env_int("NUM_ACTORS", 0, "train.num_actors")
     games_per_generation: int = _env_int("GAMES_PER_GEN", 256, "train.games_per_generation")
     replay_buffer_size: int = _env_int("REPLAY_BUFFER", 200_000, "train.replay_buffer_size")
+    # Recency-weighted sampling: a sample's draw weight halves every this-many generations of age.
+    # Keeps a large buffer for diversity while biasing training toward the freshest (best) games, so the
+    # net stops waiting ~buffer/gen generations for stale positions to evict. 0 = uniform (old behaviour).
+    replay_recency_halflife: float = _env_float("REPLAY_RECENCY_HALFLIFE", 0.0, "train.replay_recency_halflife")
     batch_size: int = _env_int("BATCH_SIZE", 512, "train.batch_size")
     train_steps_per_generation: int = _env_int("TRAIN_STEPS", 400, "train.train_steps_per_generation")
 
