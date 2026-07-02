@@ -1075,3 +1075,42 @@ Tests: Tests/Analysis.test.ts covers ConnectionDistance, EvaluatePosition, RankM
 and AnalyzeMatch shape, plus the AnalysisService compute-then-cache path and the
 GET(cache-only)/POST(compute) HTTP endpoints. Full suite 92 pass / 0 fail; both
 submodules typecheck clean.
+
+Hex — Iteration 21 summary (engine-v-engine.md): live match viewer + engine-vs-engine
+play. WHY: the backend was already the single source of truth pushing full state
+snapshots, and the replay viewer already renders a game move-by-move from the store —
+so "watch a live match" and "pit two engines against each other" needed a viewer seam
+and a match-creation entry point, not new game plumbing. Engines are already unlimited-
+concurrency Participants, so engine-vs-engine is just a game whose both seats are
+engines, driven by the existing orchestrator.
+
+Backend (live viewer + engine-match API)
+- HttpRouter: GET /Api/LiveMatches lists active engine-vs-engine games (names, board
+  size, ply) alongside the current EngineVsEngine access mode; POST /Api/EngineMatch
+  creates a match between two engines. SessionService.GetLiveEngineMatches filters
+  AllActive() to games with two EngineParticipant seats; CreateEngineMatch validates
+  both are engines, distinct, and share the board size, then creates an Unlimited-clock
+  game and hands it to the orchestrator (managed engines self-drive; externals play
+  themselves). GameManager.AllActive() exposes the active-game iterator; GameInstance
+  exposes RedName/BlueName/participant ids/MoveCount as readonly for the viewer.
+- Live spectating reuses the replay path: GetMatchReplay dropped its "Status===Active"
+  guard so /Api/Matches/:id/Replay serves an in-progress game (Status "Active", moves so
+  far). The Replay test was updated to assert this new contract (unknown ids still 404;
+  live matches return an Active-status payload) — the one stale finished-only assertion
+  was the sole red test after the feature landed.
+- Admin: new EngineVsEngine setting (public / registered / disabled) in SettingsService,
+  persisted, exposed via AdminRouter GET/POST and /Api/Limits, with a radio group on the
+  admin page.
+
+Frontend (View Matches nav + creation modal)
+- New "View Matches" nav tab. LiveMatches.tsx polls /Api/LiveMatches every 5s, shows a
+  random live match (players, size, ply) with a "Watch Live" button, and — only when the
+  access mode is public/registered — an "Engine vs Engine" button. Watching or creating a
+  match opens the existing MatchReplay component pointed at the live game id, so the live
+  view is the replay renderer over an active game. The CreateEngineMatch modal reuses
+  EnginePicker and Segmented: pick two engines, board size constrained to the intersection
+  of both engines' ranges, choose first colour (Red/Random/Blue) and swap rule; timing is
+  always Unlimited per the spec.
+
+Tests: full backend suite 92 pass / 0 fail; both submodules build clean; full stack
+(docker compose up --build) comes up healthy and serves the live endpoints.
