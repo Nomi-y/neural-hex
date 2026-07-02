@@ -1197,3 +1197,33 @@ additive). Player-card names/winner, the running indicator, clocks and the move-
 un-swapped to match. Verified live: an engine match's opening stone recolours at the swap ply
 while both players keep one colour throughout. (Analysis eval-graph still labels by recorded
 colour — a follow-up if analysis is ever run on a swapped game.)
+
+Hex — Iteration 24 summary (GPU engines + live history review). Two threads: run the
+self-hosted engines on the GPU, and let people review the game while it is still being played.
+
+GPU engines (docker-compose.engines.yml). The play-engine image now builds a CUDA torch wheel
+(build args CUDA_BUILD/CUDA_WHEEL, default cu121 — covers this box's RTX 2070 Super and up) and
+the compose grants the GPU through the NVIDIA Container Toolkit's CDI device
+(devices: nvidia.com/gpu=all) with DEVICE=cuda. Measured ~7x faster moves (from ~1 move/10s on
+CPU to ~7 moves/10s). ENGINE_DEVICE/ENGINE_CUDA_BUILD let a GPU-less host fall back to CPU.
+
+Live history review (Frontend). WHY it fit cleanly: the replay already reconstructs any position
+and the board already renders an arbitrary GameView, so "review mid-match" just needed a read-only
+snapshot and to wire the existing pieces into the live screens.
+- New Game/LiveHistory.ts (GameViewAtPly) rebuilds the board after N moves in the server's colour
+  convention (no spectator recolour, so returning to live is seamless); unit-tested via the new
+  vitest harness (Frontend `bun run Test`).
+- In your own game (GameScreen) and the spectator (MatchReplay): hover a move to ring its cell on
+  the board, click a move or step ‹ › to view that position. In your own game the board goes
+  read-only while reviewing; a left-click anywhere snaps back to live (right-click planning still
+  works — it never fires onClick), and a move arriving while you review keeps your view but flashes
+  the turn outline rather than yanking you forward.
+- Spectating a live match now opens at the most recent move (not the opening) and follows in
+  realtime — jumping straight to the newest move instead of throttling to the 1s replay cadence.
+  Scrubbing back pauses following; new moves never force you forward.
+- Turn outline no longer disappears when a game ends: it stays on whoever played last (the winner
+  in every ending — connection, resign, timeout), in both the in-game screen and the replay viewer.
+
+Note: the Frontend Build script is `vite build` (no typecheck) — run `bunx tsc --noEmit` separately.
+Both submodules typecheck clean; frontend vitest green; full stack rebuilt and verified in-browser
+(live scrub, realtime follow, board-click reset, finished-game outline, hover ring, GPU matches).

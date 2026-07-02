@@ -32,13 +32,23 @@ x-engine: &engine
   build:
     context: ./NeuralEngine
     dockerfile: Containerfile
+    # CUDA torch wheel so the engine can run on the GPU. cu121 covers Turing→Blackwell and runs under
+    # any driver >= CUDA 12.1. Override CUDA_WHEEL (e.g. cu128 for Blackwell) or set CUDA_BUILD=false
+    # for a CPU-only image. See NeuralEngine/Containerfile.
+    args:
+      CUDA_BUILD: ${ENGINE_CUDA_BUILD:-true}
+      CUDA_WHEEL: ${ENGINE_CUDA_WHEEL:-cu121}
   image: hex-play-engine
   command: python -u -m engine.play_engine
   environment: &engine-env
     ENGINE_WS: ws://backend:3001          # the backend service name on the shared network
     MODEL_PATH: /weights/model.pt         # where each service mounts its checkpoint
-    DEVICE: cpu                           # inference for spectating is cheap; no GPU needed
+    DEVICE: ${ENGINE_DEVICE:-cuda}        # cuda uses the GPU (needs the devices: entry below); cpu also works
     ENGINE_SIMS: ${ENGINE_SIMS:-200}      # MCTS sims/move — lower is faster/weaker
+  # GPU access via the NVIDIA Container Toolkit's CDI spec (/etc/cdi/nvidia.yaml). Drop this block (and
+  # set ENGINE_DEVICE=cpu, ENGINE_CUDA_BUILD=false) to run CPU-only on a host without a GPU.
+  devices:
+    - nvidia.com/gpu=all
   networks: [hexnet]
   restart: unless-stopped
 
