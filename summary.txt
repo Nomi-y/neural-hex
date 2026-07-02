@@ -1126,3 +1126,17 @@ correct state) and added a lightweight GameInstance.LiveSummary() accessor for t
 spectator listing — matching the class's surface-via-method idiom (CurrentMoveCount,
 ParticipantIdForColor) and avoiding the board/clock copy ToRecord does. Both submodules
 now `tsc --noEmit` clean; dev backend boots and connects to the dev Postgres; suite 92/0.
+
+Iteration 21 follow-up (admin panel fix): the admin page (Source/Admin/AdminPage.ts)
+is a raw HTML string served verbatim, with its logic in an inline <script>. The
+engine-vs-engine commit added its EngineVsEngine radio read as
+`(document.querySelector(...) as HTMLInputElement)?.value` — but `as HTMLInputElement`
+is TypeScript-only syntax, so the browser threw a SyntaxError that aborted the WHOLE
+inline script. Nothing ran, so the on-load logic that reveals the sign-in field never
+executed and the login field appeared hidden. tsc didn't flag it because the script is
+inside a template literal (a plain string to the compiler) — same blind spot as the
+readonly fix above. Dropped the cast to match the rest of the script's plain
+document.getElementById(...).value reads. Verified in a real browser: the sign-in card
+renders, dev-login works, and the dashboard (incl. the new Engine vs Engine radios)
+loads. WHY it matters as a rule: never put TS-only syntax (casts, type annotations,
+generics) inside the AdminPage inline script — it ships to the browser as-is.
