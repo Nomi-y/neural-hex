@@ -1114,3 +1114,15 @@ Frontend (View Matches nav + creation modal)
 
 Tests: full backend suite 92 pass / 0 fail; both submodules build clean; full stack
 (docker compose up --build) comes up healthy and serves the live endpoints.
+
+Iteration 21 follow-up (build fix): the live-viewer commit exposed GameInstance's
+RedParticipantId/BlueParticipantId/RedName/BlueName/MoveCount by marking them
+'readonly', but the class mutates them (MoveCount increments each ply; the swap rule
+exchanges seats and names), so `tsc` failed (TS2540). Both `bun --watch` (dev) and the
+Docker image run Bun without a typecheck, so it never surfaced in the suite or the prod
+build — only a real `tsc --noEmit` caught it, which is why the dev stack "wouldn't
+build". WHY the shape it is now: reverted those five fields to private (their original,
+correct state) and added a lightweight GameInstance.LiveSummary() accessor for the
+spectator listing — matching the class's surface-via-method idiom (CurrentMoveCount,
+ParticipantIdForColor) and avoiding the board/clock copy ToRecord does. Both submodules
+now `tsc --noEmit` clean; dev backend boots and connects to the dev Postgres; suite 92/0.
