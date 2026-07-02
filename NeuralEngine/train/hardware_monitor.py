@@ -17,10 +17,25 @@ import threading
 import time
 
 
+def _quota_aware_cpus() -> int:
+    """CPUs actually usable by this container = affinity ∩ CFS quota. Reuses config.available_cpus()
+    (the same count the trainer logs as 'N usable cpus'), so [hw] cpu% is a fraction of the box's real
+    allocation, not the host's core count. Falls back to affinity/cpu_count if config can't be imported."""
+    try:
+        from config import available_cpus
+        return available_cpus()
+    except Exception:
+        try:
+            return max(1, len(os.sched_getaffinity(0)))
+        except (AttributeError, OSError):
+            return max(1, os.cpu_count() or 1)
+
+
 class _CpuReader:
     """Tracks CPU utilisation across calls. Prefers cgroup v2 cpu.stat (container-scoped,
     matches the pod dashboard) and falls back to /proc/stat (namespaced on modern kernels,
-    host-scoped on older ones)."""
+    host-scoped on older ones). CPU% is normalised by the container's allocation (affinity ∩
+    CFS quota via _quota_aware_cpus), not the host core count — see the note in sample()."""
 
     def __init__(self) -> None:
         self._prev_ts: float | None = None
@@ -51,11 +66,12 @@ class _CpuReader:
                 self._prev_ts, self._prev_usec = now, usec
                 if dt > 0 and du >= 0:
                     if self._num_cpus is None:
-                        try:
-                            self._num_cpus = len(os.sched_getaffinity(0))
-                        except (AttributeError, OSError):
-                            self._num_cpus = max(1, os.cpu_count() or 1)
-                    # usage_usec counts across all CPUs => fraction = cores_used / num_cpus
+                        self._num_cpus = _quota_aware_cpus()
+                    # usage_usec counts across all CPUs => fraction = cores_used / num_cpus.
+                    # num_cpus MUST be the container's allocation (affinity ∩ CFS quota), not the
+                    # host core count — a CFS quota caps CPU *time* without shrinking the affinity
+                    # mask, so sched_getaffinity() alone returns all host cores and under-reports
+                    # utilisation ~10× (8 busy cores / 128 host = 6% instead of 8/13 = 62%).
                     cores = du / (dt * 1_000_000)
                     return min(1.0, cores / self._num_cpus)
             else:
