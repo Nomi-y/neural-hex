@@ -1276,3 +1276,29 @@ the real 2-gen CUDA training loop), test_logging and test_inference_server all g
 test covers recency weighting / uniform / whole-gen eviction / legacy snapshot load; a real run shows
 val_vloss logging next to vloss (0.24 vs 0.20 — the small, healthy fresh/train gap of an un-overfit
 net). Knobs default to old behaviour, so existing presets/runs are unaffected.
+
+Hex — Iteration 26 summary (NeuralEngine: play-engine image on GHCR + one compose file per engine).
+Goal: launch self-hosted play engines by PULLING a prebuilt image instead of building locally on each
+box — mount a checkpoint, set credentials, done.
+
+- One image, two roles. entrypoint.sh now dispatches on HEX_ROLE (default "train", so the training
+  image is unchanged): the engine role skips CUDA MPS (single process) and execs engine.play_engine
+  after the shared GPU-info log. Containerfile bakes ARG/ENV HEX_ROLE=train; the engine image is the
+  SAME source built with --build-arg HEX_ROLE=engine, so it runs the engine by default.
+- Engine-image workflow (.github/workflows/build-engine-image.yml), mirroring the training workflow but
+  pushing ghcr.io/<owner>/neural-hex-engine with NO preset baking — the engine reads the net shape from
+  the mounted checkpoint's own saved config (play_engine.load_engine), so ONE image serves ANY
+  checkpoint — and its OWN CUDA wheel, because the inference box's driver (2070 → cu121) is independent
+  of the training box's (5090 → cu128). Tags latest / <wheel|cpu> / sha-<commit>; own registry
+  buildcache; workflow_dispatch + push to `engine-images`.
+- One compose file per engine: docker-compose.engine.yml (singular) pulls the GHCR image, mounts the
+  checkpoint at /weights/model.pt, and takes creds/knobs from a per-engine *.engine.env (gitignored),
+  launched with a distinct `-p` project name so each engine starts/stops independently. HEX_ROLE=engine
+  is set in-compose too, so it runs the engine even if pointed at the training image. The plural
+  docker-compose.engines.yml ("a couple at once") was switched from local build to the same GHCR image.
+  README "Deploy via GHCR" documents both, plus remote-backend / CPU-only variants.
+
+WHY: the operator pulls instead of rebuilding on every box; per-engine files are independently
+managed; and the engine wheel tracks the inference GPU, not the trainer's. Verified: entrypoint bash
+syntax, both compose files (`docker compose config`) and the workflow YAML all parse; the singular
+template resolves to the GHCR image with HEX_ROLE=engine and the checkpoint mounted.

@@ -1,0 +1,110 @@
+name: Build and Push Engine Image
+
+# Builds the PLAY engine container and pushes it to GHCR so any host can pull it and run a
+# self-hosted engine (docker-compose.engine.yml). Same source/Containerfile as the training image,
+# but built with HEX_ROLE=engine so it runs engine.play_engine by default, and pushed under its own
+# name (neural-hex-engine) with its own CUDA wheel — the inference box's driver (e.g. a 2070 → cu121)
+# is independent of the training box's (e.g. a 5090 → cu128).
+#
+# The engine builds its network from the mounted checkpoint's own saved config, so ONE image serves
+# any checkpoint — no preset baking here (unlike the training image). Runtime knobs (ENGINE_SIMS,
+# ENGINE_TEMPERATURE, DEVICE, …) are passed as env in the compose file.
+#
+#   • Manual:  Actions → "Build and Push Engine Image" → Run workflow → pick the CUDA wheel.
+#   • Auto:    every push to the `engine-images` branch.
+#
+# Pull (package must be public — see README "Deploy via GHCR"):
+#   docker pull ghcr.io/<owner>/neural-hex-engine:latest
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda:
+        description: "Install the CUDA torch wheel (GPU image)"
+        type: boolean
+        default: true
+      cuda_wheel:
+        description: "CUDA wheel for the inference box's driver (cu121 covers Turing→Ada under driver ≥12.1; cu128 for Blackwell)"
+        type: choice
+        default: cu121
+        options:
+          - cu121
+          - cu118
+          - cu124
+          - cu126
+          - cu128
+  push:
+    branches: [engine-images]
+
+concurrency:
+  group: build-engine-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The CUDA torch wheel is large; clear the runner's preinstalled SDKs so the
+      # image build doesn't hit "no space left on device".
+      - name: Free up runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Resolve CUDA flag and image tags
+        id: cfg
+        run: |
+          CUDA="${{ github.event.inputs.cuda }}"
+          [ -z "$CUDA" ] && CUDA="true"
+          CUDA_WHEEL="${{ github.event.inputs.cuda_wheel }}"
+          [ -z "$CUDA_WHEEL" ] && CUDA_WHEEL="cu121"
+
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/neural-hex-engine"
+          SHORT="${GITHUB_SHA::7}"
+          # A wheel-specific tag too, so a mixed fleet can pin the right runtime (…-engine:cu121).
+          if [ "$CUDA" = "true" ]; then WHEEL_TAG="$CUDA_WHEEL"; else WHEEL_TAG="cpu"; fi
+
+          {
+            echo "cuda=$CUDA"
+            echo "cuda_wheel=$CUDA_WHEEL"
+            echo "owner=$OWNER"
+            echo "tags=${IMAGE}:latest,${IMAGE}:${WHEEL_TAG},${IMAGE}:sha-${SHORT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: NeuralEngine
+          file: NeuralEngine/Containerfile
+          push: true
+          build-args: |
+            CUDA_BUILD=${{ steps.cfg.outputs.cuda }}
+            CUDA_WHEEL=${{ steps.cfg.outputs.cuda_wheel }}
+            HEX_ROLE=engine
+          tags: ${{ steps.cfg.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # Registry cache (GHCR, unlimited) instead of gha (10GB cap → eviction →
+          # re-downloads the 2.5GB torch wheel every few builds).
+          cache-from: type=registry,ref=ghcr.io/${{ steps.cfg.outputs.owner }}/neural-hex-engine:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ steps.cfg.outputs.owner }}/neural-hex-engine:buildcache,mode=max

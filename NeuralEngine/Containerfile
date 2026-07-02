@@ -79,7 +79,15 @@ RUN echo '#include <stdlib.h>' | gcc -x c -c - -o /dev/null
 ENV CHECKPOINT_DIR=/workspace/checkpoints \
     LOG_DIR=/workspace/logs
 
-# Entrypoint script logs GPU info, starts CUDA MPS (best-effort), then launches training.
+# ── Container role ──────────────────────────────────────────────────────────
+# One image, two roles. Default "train" leaves the training image unchanged; the
+# engine image is built with --build-arg HEX_ROLE=engine so it runs the play/analysis
+# engine by default (entrypoint.sh dispatches on this). Still overridable at runtime:
+#   docker run -e HEX_ROLE=engine ...   (run the engine from a training image, or vice versa)
+ARG HEX_ROLE=train
+ENV HEX_ROLE=${HEX_ROLE}
+
+# Entrypoint script logs GPU info, then launches the role's process (train: +CUDA MPS).
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 CMD ["./entrypoint.sh"]

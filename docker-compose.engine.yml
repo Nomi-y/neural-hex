@@ -1,0 +1,61 @@
+# ============================================================================
+#  Hex — ONE self-hosted play engine (pull from GHCR, mount a checkpoint)
+# ============================================================================
+# A single-engine template: pull the CI-built engine image from GHCR, mount a
+# checkpoint, and pass credentials/knobs as env. Copy it per engine so each
+# engine is one file you can start/stop/manage on its own.
+#
+# Prerequisites
+#   1. The engine image is on GHCR (public):
+#        Actions → "Build and Push Engine Image" → Run workflow (or push to
+#        the `engine-images` branch). See NeuralEngine/README "Deploy via GHCR".
+#   2. The main stack is up on this host — it creates the `hex_default` network
+#      the engine joins to reach ws://backend:3001:
+#        docker compose up --build -d
+#   3. Register the engine in the admin UI (http://localhost:3001/Admin →
+#      Engines → "Register external engine"); set its board-size range to match
+#      the checkpoint. Registration returns an EngineId + one-time Token.
+#   4. Copy the env template and fill it in:
+#        cp engine.env.example alpha.engine.env       # one per engine (gitignored)
+#
+# Run (the -p project name keeps each engine isolated; use a distinct one per engine)
+#   docker compose -p hex-engine-alpha --env-file alpha.engine.env -f docker-compose.engine.yml up -d
+#   docker compose -p hex-engine-alpha -f docker-compose.engine.yml logs -f
+#   docker compose -p hex-engine-alpha -f docker-compose.engine.yml down
+#
+# Remote engine box (backend on another host): set ENGINE_WS=ws://<backend-host>:3001
+#   in the env file and DELETE the `networks:` block below (both the service's and
+#   the top-level one) — there's no local hex_default network to join.
+# CPU-only host: set ENGINE_DEVICE=cpu, use an image built with the cpu tag, and
+#   delete the `devices:` block.
+# ============================================================================
+
+services:
+  engine:
+    # CI-built engine image (HEX_ROLE=engine → runs engine.play_engine by default).
+    # Pin a wheel/sha tag if you like: …neural-hex-engine:cu121  or  :sha-<commit>.
+    image: ${ENGINE_IMAGE:-ghcr.io/nomi-y/neural-hex-engine:latest}
+    pull_policy: always
+    environment:
+      HEX_ROLE: engine                               # run the play engine (also the engine image's default)
+      ENGINE_WS: ${ENGINE_WS:-ws://backend:3001}     # backend service name on the shared network
+      ENGINE_ID: ${ENGINE_ID:?set ENGINE_ID in the env file (from the admin UI)}
+      ENGINE_TOKEN: ${ENGINE_TOKEN:?set ENGINE_TOKEN in the env file (from the admin UI)}
+      MODEL_PATH: /weights/model.pt                  # the mounted checkpoint (below)
+      DEVICE: ${ENGINE_DEVICE:-cuda}                 # cuda needs the devices: block; cpu also works
+      ENGINE_SIMS: ${ENGINE_SIMS:-400}               # MCTS sims/move — higher = stronger & slower
+      ENGINE_TEMPERATURE: ${ENGINE_TEMPERATURE:-0.0} # 0 = strongest (most-visited); >0 = variety
+    volumes:
+      # The engine reads the net architecture from the checkpoint itself, so any checkpoint works.
+      - ${ENGINE_MODEL:?set ENGINE_MODEL to a checkpoint .pt path in the env file}:/weights/model.pt:ro
+    # GPU access via the NVIDIA Container Toolkit's CDI spec (/etc/cdi/nvidia.yaml).
+    devices:
+      - nvidia.com/gpu=all
+    networks: [hexnet]
+    restart: unless-stopped
+
+# Join the network the main stack created so the engine can reach ws://backend:3001.
+networks:
+  hexnet:
+    external: true
+    name: hex_default
