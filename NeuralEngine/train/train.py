@@ -374,6 +374,36 @@ def _train_steps(net, optimizer, buffer: ReplayBuffer, cfg: Config, rng: np.rand
     return float(np.mean(policy_losses)), float(np.mean(value_losses)), float(np.mean(total_losses))
 
 
+def _fresh_value_loss(bare, samples, batch_size: int, device: str, rng: np.random.Generator,
+                      max_samples: int = 4096) -> float:
+    """Held-out value MSE: the current net's value error on freshly generated samples it has NOT yet
+    trained on.  Compared with the post-training vloss this separates a rising target-variance floor
+    (fresh ≈ train — benign, the value problem just got harder as play sharpened) from value-head
+    memorisation (fresh ≫ train — the head is fitting each game's single shared outcome label).  Runs the
+    bare eager module in eval() (dropout off) under no_grad, chunked to bound memory; never touches the
+    optimiser or the compiled graph."""
+    if not samples:
+        return float("nan")
+    n = min(max_samples, len(samples))
+    idx = rng.integers(0, len(samples), size=n)
+    was_training = bare.training
+    bare.eval()
+    sq_err, count = 0.0, 0
+    with torch.no_grad():
+        for start in range(0, n, batch_size):
+            chunk = idx[start:start + batch_size]
+            planes = np.stack([samples[int(i)][0] for i in chunk]).astype(np.float32)
+            z = np.asarray([samples[int(i)][2] for i in chunk], dtype=np.float32)
+            x = torch.from_numpy(planes).to(device)
+            target = torch.from_numpy(z).to(device)
+            _, value = bare(x)
+            sq_err += float(((value.float() - target) ** 2).sum().item())
+            count += len(chunk)
+    if was_training:
+        bare.train()
+    return sq_err / max(1, count)
+
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 def _raise_fd_limit() -> None:
@@ -431,15 +461,16 @@ def main() -> None:
     net_blocks = f"{cfg.net.blocks} blocks"
     if cfg.net.policy_blocks > 0 and cfg.net.value_blocks > 0:
         net_blocks = f"policy={cfg.net.policy_blocks} + value={cfg.net.value_blocks} blocks (separate trunks)"
-    log(f"[train]   net       = {cfg.net.channels} ch × {net_blocks}  value_hidden={cfg.net.value_hidden}  se={cfg.net.use_se}")
+    log(f"[train]   net       = {cfg.net.channels} ch × {net_blocks}  value_hidden={cfg.net.value_hidden}  "
+        f"value_drop={cfg.net.value_dropout}  se={cfg.net.use_se}")
     log(f"[train]   mcts      = {cfg.mcts.simulations} sims  cpuct={cfg.mcts.c_puct}  "
         f"dirichlet=({cfg.mcts.dirichlet_alpha},{cfg.mcts.dirichlet_epsilon})  "
         f"solver≤{cfg.mcts.solver_empty_threshold}  vc={cfg.mcts.use_virtual_connection}")
     log(f"[train]   selfplay  = {cfg.selfplay.parallel_games} parallel  temp={cfg.selfplay.temperature}({cfg.selfplay.temperature_moves} plies)  "
-        f"pipeline={cfg.mcts.pipeline_shards}  no-resign")
+        f"value_blend={cfg.selfplay.value_target_blend}  pipeline={cfg.mcts.pipeline_shards}  no-resign")
     log(f"[train]   train     = {cfg.train.hours}h budget  {cfg.train.games_per_generation} games/gen  "
         f"{cfg.train.train_steps_per_generation} steps  batch={cfg.train.batch_size}  "
-        f"buffer={cfg.train.replay_buffer_size}")
+        f"buffer={cfg.train.replay_buffer_size}  recency_hl={cfg.train.replay_recency_halflife}")
     log(f"[train]   optimizer = lr={cfg.train.learning_rate}  wd={cfg.train.weight_decay}  "
         f"clip={cfg.train.grad_clip}  schedule={cfg.train.lr_schedule}  "
         f"lr_min={cfg.train.lr_min}  warmup={cfg.train.lr_warmup_steps}  "
@@ -495,7 +526,8 @@ def main() -> None:
 
     optimizer = torch.optim.Adam(net.parameters(), lr=cfg.train.learning_rate,
                                   weight_decay=cfg.train.weight_decay)
-    buffer = ReplayBuffer(cfg.train.replay_buffer_size, cfg.game.board_size)
+    buffer = ReplayBuffer(cfg.train.replay_buffer_size, cfg.game.board_size,
+                          cfg.train.replay_recency_halflife)
     generation = 0
     best_state = copy.deepcopy(bare.state_dict())
 
@@ -551,7 +583,12 @@ def main() -> None:
                 base_seed=cfg.train.seed + generation * 1000,
                 progress=_throttled("selfplay", cfg.train.games_per_generation),
             )
-            buffer.extend(samples)
+            # Held-out value loss on the fresh samples BEFORE any gradient step this gen — the
+            # net produced them via self-play but hasn't trained on them yet, so this measures value
+            # generalisation.  Compared against the post-training vloss below it reveals whether the
+            # vloss trend is a rising target floor (val ≈ train) or memorisation (val ≫ train).
+            val_vloss = _fresh_value_loss(bare, samples, cfg.train.batch_size, device, rng)
+            buffer.extend(samples, generation)
             sp_dt = time.time() - sp_start
             mem = _gpu_memory_str()
             log(f"[selfplay] done in {offset_str(sp_dt)} "
@@ -573,7 +610,8 @@ def main() -> None:
             tr_dt = time.time() - tr_start
             mem = _gpu_memory_str()
             log(f"[train] training done in {offset_str(tr_dt)} "
-                f"(ploss={policy_loss:.3f} vloss={value_loss:.3f} total={total_loss:.3f}"
+                f"(ploss={policy_loss:.3f} vloss={value_loss:.3f} val_vloss={val_vloss:.3f} "
+                f"total={total_loss:.3f}"
                 + (f", {mem}" if mem else "") + ")")
 
             # ── Arena ────────────────────────────────────────────────────
@@ -631,7 +669,8 @@ def main() -> None:
             eta_gens = int(remaining // avg_gen) if avg_gen > 0 else 0
             log(
                 f"[summary] DONE samples={len(samples)} buffer={len(buffer)} "
-                f"ploss={policy_loss:.3f} vloss={value_loss:.3f} arena={win_rate:.0%} "
+                f"ploss={policy_loss:.3f} vloss={value_loss:.3f} val_vloss={val_vloss:.3f} "
+                f"arena={win_rate:.0%} "
                 f"{'PROMOTED' if promoted else 'kept'} gen_time={offset_str(gen_dt)} "
                 f"elapsed={offset_str(elapsed)} remaining={offset_str(remaining)} "
                 f"(~{eta_gens} more gens)"
@@ -662,6 +701,7 @@ def _config_summary(cfg: Config) -> dict:
         "policy_blocks": cfg.net.policy_blocks,
         "value_blocks": cfg.net.value_blocks,
         "value_hidden": cfg.net.value_hidden,
+        "value_dropout": cfg.net.value_dropout,
         "use_se": cfg.net.use_se,
     }
 

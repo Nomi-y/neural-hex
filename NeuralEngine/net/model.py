@@ -61,7 +61,8 @@ class _ResidualBlock(nn.Module):
 class HexNet(nn.Module):
     def __init__(self, board_size: int, in_planes: int, channels: int, blocks: int,
                  value_hidden: int, use_se: bool = False,
-                 policy_blocks: int = 0, value_blocks: int = 0) -> None:
+                 policy_blocks: int = 0, value_blocks: int = 0,
+                 value_dropout: float = 0.0) -> None:
         super().__init__()
         self.board_size = board_size
         self.num_actions = board_size * board_size + 1
@@ -90,10 +91,13 @@ class HexNet(nn.Module):
         self.policy_bn = nn.BatchNorm2d(2)
         self.policy_fc = nn.Linear(2 * board_size * board_size, self.num_actions)
 
-        # Value head: 1 feature map -> hidden -> tanh scalar.
+        # Value head: 1 feature map -> hidden -> tanh scalar.  Dropout on the hidden layer regularises
+        # the value head against memorising each game's single shared outcome label (the dominant driver
+        # of the late-generation vloss creep).  Inactive under eval(), so self-play/engine are unaffected.
         self.value_conv = nn.Conv2d(channels, 1, 1, bias=False)
         self.value_bn = nn.BatchNorm2d(1)
         self.value_fc1 = nn.Linear(board_size * board_size, value_hidden)
+        self.value_dropout = nn.Dropout(value_dropout) if value_dropout > 0 else None
         self.value_fc2 = nn.Linear(value_hidden, 1)
 
     def forward(self, x: torch.Tensor):
@@ -113,6 +117,8 @@ class HexNet(nn.Module):
         v = F.relu(self.value_bn(self.value_conv(v)))
         v = v.flatten(1)
         v = F.relu(self.value_fc1(v))
+        if self.value_dropout is not None:
+            v = self.value_dropout(v)
         value = torch.tanh(self.value_fc2(v)).squeeze(-1)
 
         return policy_logits, value
@@ -130,6 +136,7 @@ def build_net(cfg) -> HexNet:
         use_se=cfg.net.use_se,
         policy_blocks=pb,
         value_blocks=vb,
+        value_dropout=getattr(cfg.net, "value_dropout", 0.0) or 0.0,
     )
 
 

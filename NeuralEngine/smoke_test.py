@@ -112,6 +112,7 @@ def main() -> None:
 
     _test_drain_watchdog()
     _test_resignation()
+    _test_replay_recency()
 
     print(f"  solver on a near-terminal position returned value={val} action={action}")
 
@@ -262,6 +263,47 @@ def _test_resignation() -> None:
     print("  ✓ resignation: loser resigns, playthrough measures false positives, off = unchanged")
 
 
+def _test_replay_recency() -> None:
+    """Per-generation replay buffer: recency-weighted sampling biases draws toward newer generations,
+    uniform (halflife 0) does not, whole-generation eviction respects the capacity, and the legacy flat
+    snapshot still loads.  z carries each block's generation tag so we can measure which gen was drawn."""
+    from train.replay_buffer import ReplayBuffer
+    rng = np.random.default_rng(0)
+    N = 3
+
+    def block(tag: float, k: int = 200):
+        return [(np.zeros((5, N, N), np.float32), np.zeros(N * N + 1, np.float32), float(tag))
+                for _ in range(k)]
+
+    # Recency (halflife 1 gen): the newest of two equal gens gets ~2× the weight → ~2/3 of draws.
+    buf = ReplayBuffer(10_000, N, recency_halflife=1.0)
+    buf.extend(block(0.0), generation=0)
+    buf.extend(block(1.0), generation=1)
+    _, _, z = buf.sample(4000, rng)
+    frac_new = float((z == 1.0).mean())
+    assert 0.60 < frac_new < 0.72, f"recency weighting off: newest-gen draw fraction {frac_new:.2f} (want ~0.67)"
+
+    # Uniform (halflife 0): two equal gens → ~50/50.
+    buf_u = ReplayBuffer(10_000, N, recency_halflife=0.0)
+    buf_u.extend(block(0.0), generation=0)
+    buf_u.extend(block(1.0), generation=1)
+    _, _, zu = buf_u.sample(4000, rng)
+    assert 0.44 < float((zu == 1.0).mean()) < 0.56, "uniform sampling should be ~50/50 across two equal gens"
+
+    # Eviction: capacity counted in samples, whole oldest generation dropped once exceeded.
+    buf_e = ReplayBuffer(250, N, recency_halflife=0.0)
+    buf_e.extend(block(0.0, 200), generation=0)
+    buf_e.extend(block(1.0, 200), generation=1)
+    assert len(buf_e) == 200 and all(b.gen == 1 for b in buf_e.blocks), \
+        "over-capacity buffer should drop the whole oldest generation"
+
+    # Legacy flat snapshot (old format) loads into a single gen-0 block.
+    buf_l = ReplayBuffer(10_000, N)
+    buf_l.load_state_dict({"capacity": 10_000, "board_size": N, "buffer": block(7.0, 10)})
+    assert len(buf_l) == 10, "legacy flat buffer snapshot failed to load"
+    print("  ✓ replay buffer: recency weighting, uniform, whole-gen eviction, legacy snapshot")
+
+
 def cuda_training_loops(generations: int = 2) -> None:
     """Run the REAL training entrypoint (`python -m train.train`) for a bounded few generations on
     the GPU — the closest thing to a live run — so the logging changes and the self-play pipelining
@@ -288,8 +330,12 @@ def cuda_training_loops(generations: int = 2) -> None:
             "BOARD_SIZE": "5", "NET_CHANNELS": "16", "NET_BLOCKS": "2",
             # Separate policy/value trunks + weighted value loss — the value-head fix.
             # Exercised here so the two-tower forward/save/resume path can't silently regress.
-            "NET_POLICY_BLOCKS": "2", "NET_VALUE_BLOCKS": "1", "VALUE_LOSS_WEIGHT": "3.0",
+            "NET_POLICY_BLOCKS": "2", "NET_VALUE_BLOCKS": "1", "VALUE_LOSS_WEIGHT": "1.5",
             "NET_SE": "false", "NET_VALUE_HIDDEN": "32",
+            # run3 value-overfit pack: value-head dropout, a variance-lowered value-target blend, and
+            # recency-weighted replay sampling — so the dropout forward, the blended label, the
+            # per-generation buffer, and the held-out val_vloss instrument are all exercised end-to-end.
+            "NET_VALUE_DROPOUT": "0.3", "VALUE_TARGET_BLEND": "0.35", "REPLAY_RECENCY_HALFLIFE": "2.0",
             "MCTS_SIMS": "12", "PARALLEL_GAMES": "8", "PIPELINE_SHARDS": "2",
             "NUM_ACTORS": "2", "GAMES_PER_GEN": "8", "BATCH_SIZE": "32",
             "TRAIN_STEPS": "5", "REPLAY_BUFFER": "5000",
@@ -319,6 +365,8 @@ def cuda_training_loops(generations: int = 2) -> None:
     assert any("pipeline" in ln for ln in log_lines), "self-play fan-out never reported the pipeline"
     assert any("separate trunks" in ln for ln in log_lines), \
         "separate policy/value trunks never reported — the value-head fix path was not exercised"
+    assert any("val_vloss=" in ln for ln in done), \
+        "held-out val_vloss never reported — the value-generalisation instrument was not exercised"
 
     # Progress dedupe: at most one [selfplay] N/total progress line per second (interval=1s here),
     # not one per worker — a decent proxy for the fan-out no longer being actors× too chatty.
