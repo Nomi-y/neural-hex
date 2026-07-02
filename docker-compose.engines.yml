@@ -1,27 +1,34 @@
 # ============================================================================
-#  Hex — self-hosted play engines
+#  Hex — self-hosted play engines (several at once, from GHCR)
 # ============================================================================
 # Spin up one or more NeuralEngine checkpoints as live opponents that connect to
 # the running Hex backend and can be watched (and pitted against each other) from
 # the "View Matches" tab.  Each engine needs only two things: a weight file and a
-# credential — everything else is shared.
+# credential — everything else is shared. The engine image is PULLED from GHCR (no
+# local build); it reads each net's architecture from the mounted checkpoint, so
+# one image serves any checkpoint.
+#
+# Prefer ONE FILE PER ENGINE?  Use docker-compose.engine.yml (singular) — a copy-
+# per-engine template you start/stop independently. This file is the "run a couple
+# together on this host" convenience.
 #
 # Prerequisites
-#   1. The main stack is up (it creates the `hex_default` network the engines join):
+#   1. The engine image is on GHCR (public): Actions → "Build and Push Engine Image".
+#   2. The main stack is up (it creates the `hex_default` network the engines join):
 #        docker compose up --build -d
-#   2. Register each engine in the admin UI — http://localhost:3001/Admin →
+#   3. Register each engine in the admin UI — http://localhost:3001/Admin →
 #      Engines tab → "Register external engine".  Registration returns an
 #      EngineId and a one-time Token.  Set the engine's board-size range to match
 #      the checkpoint (the training-data checkpoints here are 11x11).
-#   3. Copy the env template and fill in the ids/tokens:
+#   4. Copy the env template and fill in the ids/tokens:
 #        cp .env.engines.example .env.engines
 #
 # Run
-#   docker compose -f docker-compose.engines.yml --env-file .env.engines up --build -d
+#   docker compose -f docker-compose.engines.yml --env-file .env.engines up -d
 #
 # Add more engines
 #   Copy an `engineN` service block, give it a new checkpoint mount and its own
-#   ENGINEn_ID / ENGINEn_TOKEN.  The image is built once and reused by every engine.
+#   ENGINEn_ID / ENGINEn_TOKEN.  The image is pulled once and reused by every engine.
 # ============================================================================
 
 name: hex-engines
@@ -29,24 +36,18 @@ name: hex-engines
 # Shared engine definition — every engine service merges this and only overrides
 # its credentials and weight file.
 x-engine: &engine
-  build:
-    context: ./NeuralEngine
-    dockerfile: Containerfile
-    # CUDA torch wheel so the engine can run on the GPU. cu121 covers Turing→Blackwell and runs under
-    # any driver >= CUDA 12.1. Override CUDA_WHEEL (e.g. cu128 for Blackwell) or set CUDA_BUILD=false
-    # for a CPU-only image. See NeuralEngine/Containerfile.
-    args:
-      CUDA_BUILD: ${ENGINE_CUDA_BUILD:-true}
-      CUDA_WHEEL: ${ENGINE_CUDA_WHEEL:-cu121}
-  image: hex-play-engine
-  command: python -u -m engine.play_engine
+  # CI-built engine image from GHCR (HEX_ROLE=engine → runs engine.play_engine by default).
+  # Pin a wheel/sha: …neural-hex-engine:cu121 (Turing→Ada) / :cu128 (Blackwell) / :sha-<commit>.
+  image: ${ENGINE_IMAGE:-ghcr.io/nomi-y/neural-hex-engine:latest}
+  pull_policy: always
   environment: &engine-env
+    HEX_ROLE: engine                      # run the play engine (also the engine image's default)
     ENGINE_WS: ws://backend:3001          # the backend service name on the shared network
     MODEL_PATH: /weights/model.pt         # where each service mounts its checkpoint
     DEVICE: ${ENGINE_DEVICE:-cuda}        # cuda uses the GPU (needs the devices: entry below); cpu also works
-    ENGINE_SIMS: ${ENGINE_SIMS:-200}      # MCTS sims/move — lower is faster/weaker
+    ENGINE_SIMS: ${ENGINE_SIMS:-400}      # MCTS sims/move — lower is faster/weaker
   # GPU access via the NVIDIA Container Toolkit's CDI spec (/etc/cdi/nvidia.yaml). Drop this block (and
-  # set ENGINE_DEVICE=cpu, ENGINE_CUDA_BUILD=false) to run CPU-only on a host without a GPU.
+  # set ENGINE_DEVICE=cpu, use a :cpu image tag) to run CPU-only on a host without a GPU.
   devices:
     - nvidia.com/gpu=all
   networks: [hexnet]

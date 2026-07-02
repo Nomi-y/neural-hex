@@ -278,6 +278,31 @@ docker run --gpus all -v ./checkpoints:/workspace/checkpoints -v ./logs:/workspa
 If you keep the package private instead, log in first with a PAT that has `read:packages`:
 `echo "$GHCR_PAT" | docker login ghcr.io -u <owner> --password-stdin`.
 
+### Engine image (play engine) via GHCR
+
+The **training** image above runs the self-play loop. To run a **play engine** against the backend,
+build the sibling **engine image** — same source, built with `HEX_ROLE=engine` so it runs
+`engine.play_engine` by default, and pushed under its own name so its CUDA wheel is independent of the
+training box's (your inference GPU's driver, not the trainer's, decides the wheel).
+
+- **Build it:** Actions → *Build and Push Engine Image* → *Run workflow* → pick the CUDA wheel
+  (`cu121` covers Turing→Ada; `cu128` for Blackwell). Or push to the `engine-images` branch.
+  Workflow: `.github/workflows/build-engine-image.yml`. Tags: `latest`, the wheel (`cu121`/`cpu`/…),
+  and `sha-<commit>`. Make the `neural-hex-engine` package **Public** (same as above).
+- **The engine reads the net architecture from the checkpoint itself**, so ONE image serves any
+  checkpoint — no preset baking. Runtime knobs (`ENGINE_SIMS`, `ENGINE_TEMPERATURE`, `DEVICE`) are env.
+
+**One compose file per engine** — pull, mount a checkpoint, set credentials (repo root):
+
+```bash
+cp engine.env.example alpha.engine.env          # fill in ENGINE_ID/ENGINE_TOKEN/ENGINE_MODEL (gitignored)
+docker compose -p hex-engine-alpha --env-file alpha.engine.env -f docker-compose.engine.yml up -d
+docker compose -p hex-engine-alpha -f docker-compose.engine.yml logs -f
+```
+
+Copy `alpha.engine.env` per engine and use a distinct `-p` project name for each. To run a couple
+together on one host instead, `docker-compose.engines.yml` (plural) merges several into one file.
+
 ## Hardware presets
 
 Presets are defined in `hyperparams.toml` and can be applied at build time:

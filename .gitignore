@@ -3,6 +3,8 @@
 .env
 # Per-engine credentials for docker-compose.engines.yml (real tokens; never commit).
 .env.engines
+# Per-engine env files for docker-compose.engine.yml (one per engine; real tokens).
+*.engine.env
 
 # Admin SSH keys — the private key must never be committed; the public key is inlined into
 # docker-compose.yml (ADMIN_PUBLIC_KEYS), so neither file needs to be tracked.
